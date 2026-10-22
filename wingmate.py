@@ -125,12 +125,30 @@ def custom_value(item, *words):
     return ""
 
 
+US_STATES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA", "colorado": "CO",
+    "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
+    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS", "kentucky": "KY", "louisiana": "LA",
+    "maine": "ME", "maryland": "MD", "massachusetts": "MA", "michigan": "MI", "minnesota": "MN",
+    "mississippi": "MS", "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD", "tennessee": "TN", "texas": "TX",
+    "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
+}
+
+
+def state_code(state):
+    return US_STATES.get(state.strip().lower(), state.strip())
+
+
 def address_parts(lead):
     """Returns (location 'City, ST', full address) from a string or structured address."""
     raw = lead.get("address") or lead.get("geocoded_address") or ""
     if isinstance(raw, dict):
         city = text(raw.get("city"))
-        state = text(raw.get("state") or raw.get("province") or raw.get("region"))
+        state = state_code(text(raw.get("state") or raw.get("province") or raw.get("region")))
         street = text(raw.get("street") or raw.get("address1") or raw.get("line1"))
         full = ", ".join(p for p in (street, city, state, text(raw.get("zip") or raw.get("postal_code"))) if p)
         return ", ".join(p for p in (city, state) if p), full
@@ -161,6 +179,18 @@ def as_iso(value):
     return text(value) or datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+COMMENT_TYPES = {"PhoneCorrespondence": "Phone call", "EmailCorrespondence": "Email",
+                 "TextCorrespondence": "Text", "Meeting": "Meeting"}
+
+
+def comment_label(comment):
+    """Wingmate's note kind ("Texted", "Connected Via Phone", an email…) so the context survives."""
+    kind = comment.get("comment_type")
+    if isinstance(kind, dict) and text(kind.get("name")):
+        return text(kind["name"])
+    return COMMENT_TYPES.get(text(comment.get("type")), "")
+
+
 # ---------- the sync ----------
 
 def run_sync(db, client, tools, dry_run=False):
@@ -171,6 +201,10 @@ def run_sync(db, client, tools, dry_run=False):
     users = {str(u.get("id")): u for u in client.get_all(f"/campaigns/{cid}/users")}
     leads = client.get_all(f"/campaigns/{cid}/leads")
     contacts = client.get_all(f"/campaigns/{cid}/contacts")
+    for lead in leads:  # the campaign user list can be partial; leads embed their owners and worker
+        for user in (lead.get("owners") or []) + [lead.get("worker")]:
+            if isinstance(user, dict) and user.get("id") is not None:
+                users.setdefault(str(user["id"]), user)
 
     reps = [dict(r) for r in db.execute("SELECT name, email FROM reps WHERE active = 1")]
     rep_by_email = {r["email"].strip().lower(): r["name"] for r in reps if r["email"]}
@@ -333,7 +367,9 @@ def run_sync(db, client, tools, dry_run=False):
                 body = text(comment.get("text") or comment.get("body") or comment.get("comment"), 5000)
                 if ext in known or not body:
                     continue
-                db.insert("notes", {"node_id": node["id"], "body": body, "author": author_for(comment),
+                label = comment_label(comment)
+                db.insert("notes", {"node_id": node["id"], "body": f"{label}: {body}" if label else body,
+                                    "author": author_for(comment),
                                     "created_at": as_iso(comment.get("created_at")), "external_id": ext})
                 known.add(ext)
                 counts["notes_added"] += 1
