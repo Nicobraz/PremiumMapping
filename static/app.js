@@ -183,7 +183,11 @@ async function api(method, path, body) {
     showSignIn(true);
     throw new Error('Please sign in');
   }
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.duplicates = data.duplicates;  // set when the server spots a likely duplicate
+    throw err;
+  }
   return data;
 }
 
@@ -1084,6 +1088,74 @@ function rerenderCard() {
   panel.scrollTop = scroll;
 }
 
+// ----- duplicates -----
+// Mirrors the server's matching so people see a warning while they type.
+
+const COMPANY_SUFFIXES = new Set(['inc', 'llc', 'co', 'corp', 'corporation', 'company', 'ltd', 'limited',
+  'lp', 'llp', 'pllc', 'pc', 'the']);
+
+function normName(name, isCompany) {
+  const words = String(name || '').toLowerCase().replace(/['\u2019]/g, '').replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+  const trimmed = isCompany ? words.filter((w) => !COMPANY_SUFFIXES.has(w)) : words;
+  return (trimmed.length ? trimmed : words).join(' ');
+}
+
+function localDuplicates(type, name, companyId, email, excludeId) {
+  const target = normName(name, type === 'company');
+  const mail = String(email || '').trim().toLowerCase();
+  return [...state.nodes.values()].filter((n) => {
+    if (n.type !== type || n.id === excludeId) return false;
+    const sameName = normName(n.name, type === 'company') === target;
+    if (type === 'company') return sameName;
+    return (sameName && n.company_id === companyId) || (mail && n.email.trim().toLowerCase() === mail);
+  });
+}
+
+function similarCompanies(name, excludeId, exclude) {
+  const target = normName(name, true);
+  if (target.length < 3) return [];
+  return [...state.nodes.values()].filter((n) => {
+    if (n.type !== 'company' || n.id === excludeId || exclude.has(n.id)) return false;
+    const other = normName(n.name, true);
+    return other !== target && (other.includes(target) || target.includes(other));
+  }).slice(0, 3);
+}
+
+function dupItemHtml(n) {
+  const detail = n.type === 'person' ? (companyOf(n)?.name || n.company || '') : n.location;
+  return `<button type="button" class="dup-item" data-goto="${n.id}" title="Open ${esc(n.name)}">${esc(n.name)}${detail ? ` <small>${esc(detail)}</small>` : ''}</button>`;
+}
+
+function updateDupHint(form) {
+  const p = state.panel;
+  const box = form.querySelector('[data-dup-hint]');
+  if (!box || !p || (p.kind !== 'new-node' && p.kind !== 'node-edit')) return;
+  const type = p.kind === 'new-node' ? p.type : state.nodes.get(p.id)?.type;
+  const excludeId = p.kind === 'node-edit' ? p.id : null;
+  const name = form.elements.name.value;
+  const companyId = form.elements.company_id ? Number(form.elements.company_id.value) || null : null;
+  const email = form.elements.email ? form.elements.email.value : '';
+  const dups = name.trim() || email.trim() ? localDuplicates(type, name, companyId, email, excludeId) : [];
+  const similar = type === 'company' ? similarCompanies(name, excludeId, new Set(dups.map((d) => d.id))) : [];
+  box.hidden = !dups.length && !similar.length;
+  box.classList.toggle('strong', dups.length > 0);
+  box.innerHTML = (dups.length ? `<span><b>Already on the map:</b></span>${dups.map(dupItemHtml).join('')}` : '')
+    + (similar.length ? `<span class="muted">Similar:</span>${similar.map(dupItemHtml).join('')}` : '');
+}
+
+function showDuplicateWarning(form, err, isNew) {
+  form.querySelector('.dup-warning')?.remove();
+  const box = document.createElement('div');
+  box.className = 'dup-warning';
+  box.setAttribute('role', 'alert');
+  box.innerHTML = `<p><b>${esc(err.message)}</b> Open the existing one, or keep yours if it's really different (another location, say).</p>
+    <div class="dup-list">${err.duplicates.map((d) => dupItemHtml({ ...d, type: state.nodes.get(d.id)?.type || '' })).join('')}</div>
+    <button type="button" class="btn btn-sm" data-act="force-save">${isNew ? 'Add anyway' : 'Save anyway'}</button>`;
+  form.querySelector('.form-actions').before(box);
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
 // ----- edit forms -----
 
 function nodeFormHtml(n, isNew) {
@@ -1092,7 +1164,8 @@ function nodeFormHtml(n, isNew) {
     `<label>${label}<input name="${name}" value="${esc(n[name])}" ${attrs}></label>`;
   const person = n.type === 'person';
   return `<form class="form" data-form="node">
-    ${field('name', 'Name', `required maxlength="300" placeholder="${person ? 'Jane Smith' : 'Acme Corp'}"`)}
+    ${field('name', 'Name', `required maxlength="300" autocomplete="off" placeholder="${person ? 'Jane Smith' : 'Acme Corp'}"`)}
+    <div class="dup-hint" data-dup-hint role="status" hidden></div>
     ${person ? field('title', 'Title / role', 'maxlength="300" placeholder="VP of Operations"') : ''}
     ${person ? `<label>Company<select name="company_id">
         <option value="">None</option>
@@ -1264,10 +1337,13 @@ panel.addEventListener('input', (evt) => {
     return;
   }
   state.panelDirty = true;
+  const nodeForm = evt.target.closest('[data-form="node"]');
+  if (nodeForm && (evt.target.name === 'name' || evt.target.name === 'email')) updateDupHint(nodeForm);
 });
 
 // Changing the relationship type on a new connection updates the arrow preview.
 panel.addEventListener('change', (evt) => {
+  if (evt.target.name === 'company_id') updateDupHint(evt.target.form);
   if (evt.target.name !== 'rel_type') return;
   const arrow = panel.querySelector('.edge-ends .arrow');
   if (arrow) arrow.textContent = (REL[evt.target.value] || REL.other).directed ? '→' : '—';
@@ -1328,7 +1404,11 @@ panel.addEventListener('click', async (evt) => {
   else if (act === 'cancel-edit') openNodePanel(p.id);
   else if (act === 'show-map') focusOn(p.id);
   else if (act === 'add-person-here') openNewNodePanel('person', p.id);
-  else if (act === 'open-picker') {
+  else if (act === 'force-save') {
+    const form = panel.querySelector('[data-form="node"]');
+    form.dataset.force = '1';
+    form.requestSubmit();
+  } else if (act === 'open-picker') {
     state.picker = { nodeId: p.id, otherId: null };
     rerenderCard();
     panel.querySelector('.picker select[name="target_id"]')?.focus();
@@ -1400,6 +1480,7 @@ panel.addEventListener('submit', async (evt) => {
       toast('Connected');
     } else if (form.dataset.form === 'node') {
       if ('company_id' in data) data.company_id = data.company_id ? Number(data.company_id) : null;
+      if (form.dataset.force) data.allow_duplicate = true;
       if (p.kind === 'new-node') {
         const created = await api('POST', '/api/nodes', { type: p.type, ...data });
         await sync();
@@ -1429,9 +1510,11 @@ panel.addEventListener('submit', async (evt) => {
       }
     }
   } catch (err) {
-    toast(err.message, true);
+    if (err.duplicates && form.dataset.form === 'node') showDuplicateWarning(form, err, state.panel?.kind === 'new-node');
+    else toast(err.message, true);
   } finally {
     submit.disabled = false;
+    delete form.dataset.force;
   }
 });
 

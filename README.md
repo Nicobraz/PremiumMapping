@@ -17,6 +17,7 @@ email, and changes show up for everyone within a few seconds.
 - **Click** a person to open their **player card**: contact info, tags, an About summary, connections (split into inside and outside their company), and running notes stamped with who wrote them and when.
 - **Click** a company for its card: everyone who works there, with titles and how they're connected inside the company, plus company notes.
 - **+ Add connection** on a card connects people without touching the map, and coworkers are listed first. The "Also at…" chips connect coworkers who aren't linked yet in one click.
+- **Duplicate guard**: adding or renaming warns as you type if the company or person is already on the map (company names ignore capitals, punctuation and Inc/LLC/Corp; people match on name within the same company, or on email). Saving a likely duplicate asks you to open the existing record or **Add anyway**. CSV imports use the same matching.
 - **Directory** lists every company (with headcount) and every person. Filter it, then click to open a card.
 - **Connect** (top bar): the map way, where you click one dot and then another.
 - **⚙ Admin**: add, edit, deactivate or remove reps (name and the work email they sign in with), and change the admin password.

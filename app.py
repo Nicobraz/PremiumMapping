@@ -13,6 +13,7 @@ import hmac
 import io
 import math
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -396,6 +397,46 @@ def to_int(value):
         return None
 
 
+# ---------- duplicate detection ----------
+
+COMPANY_SUFFIXES = {"inc", "llc", "co", "corp", "corporation", "company", "ltd", "limited",
+                    "lp", "llp", "pllc", "pc", "the"}
+
+
+def norm_name(name, is_company=False):
+    """'Gold's Gym, LLC' and 'golds gym' compare equal; so do 'Acme Corp' and 'Acme Corporation, Inc.'"""
+    text = re.sub(r"['\u2019]", "", str(name or "").lower()).replace("&", " and ")
+    words = re.sub(r"[^a-z0-9]+", " ", text).split()
+    if is_company:
+        trimmed = [w for w in words if w not in COMPANY_SUFFIXES]
+        words = trimmed or words
+    return " ".join(words)
+
+
+def find_duplicates(db, node_type, name, company_id=None, email="", exclude_id=None):
+    """Companies match on name; people on name within the same company, or on email."""
+    target = norm_name(name, node_type == "company")
+    email = str(email or "").strip().lower()
+    found = []
+    for r in db.execute("SELECT id, name, location, company_id, email FROM nodes WHERE type = ?", (node_type,)):
+        if r["id"] == exclude_id:
+            continue
+        same_name = norm_name(r["name"], node_type == "company") == target
+        if node_type == "company":
+            hit = same_name
+        else:
+            hit = (same_name and r["company_id"] == company_id) or (email and r["email"].strip().lower() == email)
+        if hit:
+            found.append({"id": r["id"], "name": r["name"], "location": r["location"],
+                          "company": node_name(db, r["company_id"]) if r["company_id"] else ""})
+    return found
+
+
+def duplicate_response(duplicates, node_type):
+    what = "company" if node_type == "company" else "person"
+    return jsonify({"error": f"This {what} may already be on the map.", "duplicates": duplicates}), 409
+
+
 def clean_node_fields(db, data, node_type):
     """Whitelists and normalizes node fields. Returns (values, error)."""
     out = {}
@@ -540,6 +581,10 @@ def create_node():
     values, err = clean_node_fields(db, data, node_type)
     if err:
         return bad(err)
+    if not data.get("allow_duplicate"):
+        duplicates = find_duplicates(db, node_type, values["name"], values.get("company_id"), values.get("email", ""))
+        if duplicates:
+            return duplicate_response(duplicates, node_type)
     if not is_admin():
         values["owner_rep"] = own_name()  # reps can only assign new leads to themselves
     ts = now()
@@ -569,6 +614,13 @@ def update_node(node_id):
         if values["owner_rep"] != existing["owner_rep"]:
             return bad("Only an admin can change who a lead is assigned to.", 403)
         del values["owner_rep"]
+    identity = ("name", "company_id", "email")
+    if not data.get("allow_duplicate") and any(k in values and values[k] != existing[k] for k in identity):
+        merged = {**existing, **values}
+        duplicates = find_duplicates(db, existing["type"], merged["name"], merged["company_id"],
+                                     merged["email"], exclude_id=node_id)
+        if duplicates:
+            return duplicate_response(duplicates, existing["type"])
     if values:
         values.update(updated_at=now(), updated_by=actor())
         assignments = ", ".join(f"{col} = ?" for col in values)
@@ -1059,10 +1111,13 @@ def import_csv():
 
     db = get_db()
     ts, who, admin = now(), actor(), is_admin()
-    companies = {r["name"].strip().lower(): r["id"]
+    companies = {norm_name(r["name"], True): r["id"]
                  for r in db.execute("SELECT id, name FROM nodes WHERE type = 'company'")}
-    people = {(r["name"].strip().lower(), r["company_id"])
-              for r in db.execute("SELECT name, company_id FROM nodes WHERE type = 'person'")}
+    people, emails = set(), set()
+    for r in db.execute("SELECT name, company_id, email FROM nodes WHERE type = 'person'"):
+        people.add((norm_name(r["name"]), r["company_id"]))
+        if r["email"].strip():
+            emails.add(r["email"].strip().lower())
     added_companies = added_people = skipped = 0
 
     for raw_row in reader:
@@ -1070,9 +1125,9 @@ def import_csv():
         name, company = row.get("name", ""), row.get("company", "")
         company_id = None
         if company:
-            company_id = companies.get(company.lower())
+            company_id = companies.get(norm_name(company, True))
             if company_id is None:
-                company_id = companies[company.lower()] = db.insert("nodes", {
+                company_id = companies[norm_name(company, True)] = db.insert("nodes", {
                     "type": "company", "name": company[:300], "owner_rep": "" if admin else own_name(),
                     "created_at": ts, "updated_at": ts, "updated_by": who})
                 added_companies += 1
@@ -1080,8 +1135,9 @@ def import_csv():
             if not company:
                 skipped += 1
             continue
-        key = (name.lower(), company_id)
-        if key in people:
+        key = (norm_name(name), company_id)
+        email = row.get("email", "").strip().lower()
+        if key in people or (email and email in emails):
             skipped += 1
             continue
         values = {f: row.get(f, "")[:5000 if f == "notes" else 300] for f in NODE_TEXT_FIELDS}
@@ -1090,6 +1146,8 @@ def import_csv():
             values["owner_rep"] = own_name()
         db.insert("nodes", values)
         people.add(key)
+        if email:
+            emails.add(email)
         added_people += 1
 
     if added_companies or added_people:
