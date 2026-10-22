@@ -30,6 +30,8 @@ const state = {
   panel: null,          // { kind: 'node' | 'node-edit' | 'edge' | 'directory', id } or { kind: 'new-node' | 'new-edge', ... }
   panelDirty: false,
   picker: null,         // { nodeId, otherId } while the inline "add connection" form is open
+  reps: [],
+  editRepId: null,
   dirTab: 'companies',
   dirQuery: '',
   focusId: null,
@@ -76,12 +78,40 @@ function nodeColor(n) {
 
 // ---------- identity ----------
 
+// Once an admin has added reps, "You" is a dropdown; before that it's free text.
 const meInput = $('#me');
+const meSelect = $('#me-select');
 meInput.value = storeGet('pss.me');
 meInput.addEventListener('change', () => storeSet('pss.me', meInput.value.trim()));
+meSelect.addEventListener('change', () => {
+  storeSet('pss.me', meSelect.value);
+  meSelect.classList.remove('attention');
+});
+
+const activeReps = () => state.reps.filter((r) => r.active);
+
+function myName() {
+  return activeReps().length ? meSelect.value : meInput.value.trim();
+}
+
+function renderMe() {
+  const reps = activeReps();
+  meSelect.hidden = !reps.length;
+  meInput.hidden = !!reps.length;
+  if (!reps.length) return;
+  const current = storeGet('pss.me');
+  meSelect.innerHTML = '<option value="">Who are you?</option>'
+    + reps.map((r) => `<option value="${esc(r.name)}" ${r.name === current ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
+}
 
 function ensureName() {
-  if (meInput.value.trim()) return true;
+  if (myName()) return true;
+  if (activeReps().length) {
+    meSelect.classList.add('attention');
+    meSelect.focus();
+    toast('Pick your name at the top so the team knows who made changes');
+    return true;
+  }
   const name = prompt('What\'s your name? It shows in the activity log so the team knows who changed what.');
   if (name && name.trim()) {
     meInput.value = name.trim().slice(0, 60);
@@ -93,7 +123,7 @@ function ensureName() {
 // ---------- API ----------
 
 async function api(method, path, body) {
-  const headers = { 'X-Actor': encodeURIComponent(meInput.value.trim()) };
+  const headers = { 'X-Actor': encodeURIComponent(myName()) };
   const key = storeGet('pss.editKey');
   if (key) headers['X-Edit-Key'] = key;
   let payload;
@@ -368,6 +398,8 @@ async function doSync() {
       if (!state.notes.has(note.node_id)) state.notes.set(note.node_id, []);
       state.notes.get(note.node_id).push(note);
     }
+    state.reps = data.reps || [];
+    renderMe();
     state.noteText = new Map([...state.notes].map(([id, list]) =>
       [id, list.map((note) => note.body).join('\n').toLowerCase()]));
     render();
@@ -438,6 +470,7 @@ function fillSelect(select, values, allLabel, current) {
 function refreshFilterOptions() {
   const owners = new Map();
   const tags = new Map();
+  for (const r of activeReps()) owners.set(r.name.toLowerCase(), r.name);
   for (const n of state.nodes.values()) {
     const o = n.owner_rep.trim();
     if (o) owners.set(o.toLowerCase(), o);
@@ -904,7 +937,7 @@ function nodeFormHtml(n, isNew) {
       </select></label>` : ''}
     ${person ? `<div class="row">${field('email', 'Email', 'type="email" maxlength="300"')}${field('phone', 'Phone', 'type="tel" maxlength="300"')}</div>` : ''}
     ${field('location', 'Location', 'maxlength="300" placeholder="City, State"')}
-    ${field('owner_rep', 'Owner rep', 'list="owner-list" maxlength="300" placeholder="Who owns this relationship?"')}
+    ${ownerFieldHtml(n.owner_rep)}
     ${field('tags', 'Tags <small>comma separated</small>', `maxlength="300" placeholder="${person ? 'decision maker, champion' : 'target, customer'}"`)}
     <label>About <small>a short summary; use Notes on the card for running updates</small>
       <textarea name="notes" rows="3" maxlength="5000" placeholder="${person ? 'Background, what they care about…' : 'What they do, size, how we sell to them…'}">${esc(n.notes)}</textarea></label>
@@ -916,6 +949,18 @@ function nodeFormHtml(n, isNew) {
       ${isNew ? '' : '<button type="button" class="btn btn-danger-ghost" data-act="delete-node">Delete</button>'}
     </div>
   </form>`;
+}
+
+function ownerFieldHtml(current) {
+  const reps = activeReps().map((r) => r.name);
+  if (!reps.length) {
+    return `<label>Owner rep<input name="owner_rep" value="${esc(current)}" list="owner-list" maxlength="300" placeholder="Who owns this relationship?"></label>`;
+  }
+  const names = current && !reps.includes(current) ? [...reps, current] : reps;
+  return `<label>Owner rep<select name="owner_rep">
+    <option value="">Unassigned</option>
+    ${names.map((name) => `<option value="${esc(name)}" ${name === current ? 'selected' : ''}>${esc(name)}${reps.includes(name) ? '' : ' (not on rep list)'}</option>`).join('')}
+  </select></label>`;
 }
 
 function openEditPanel(id) {
@@ -931,7 +976,7 @@ function openNewNodePanel(type, companyId) {
   stopConnect();
   ensureName();
   const blank = { type, name: '', title: '', company_id: companyId ?? null, email: '', phone: '',
-    location: '', tags: '', owner_rep: meInput.value.trim(), notes: '' };
+    location: '', tags: '', owner_rep: activeReps().some((r) => r.name === myName()) ? myName() : '', notes: '' };
   const company = companyId != null ? state.nodes.get(companyId) : null;
   showPanel({ kind: 'new-node', type },
     panelHead(type === 'company' ? 'Company' : 'Person', `pill-${type}`,
@@ -1032,7 +1077,8 @@ function refreshPanelAfterSync() {
   if (p.kind === 'new-edge' && (!state.nodes.has(p.sourceId) || !state.nodes.has(p.targetId))) { closePanel(); return; }
   if (p.kind === 'directory') { renderDirectoryList(); return; }
   if (state.panelDirty) return;
-  if (p.kind === 'node') rerenderCard();
+  if (p.kind === 'admin') rerenderAdmin();
+  else if (p.kind === 'node') rerenderCard();
   else if (p.kind === 'edge') {
     const scroll = panel.scrollTop;
     openEdgePanel(p.id);
@@ -1066,6 +1112,8 @@ panel.addEventListener('keydown', (evt) => {
 
 panel.addEventListener('click', async (evt) => {
   const p = state.panel;
+  const repBtn = evt.target.closest('[data-rep-act]');
+  if (repBtn) { await handleRepAction(repBtn.dataset.repAct, Number(repBtn.dataset.rep)); return; }
   const tab = evt.target.closest('[data-dir-tab]');
   if (tab) { openDirectory(tab.dataset.dirTab); return; }
 
@@ -1137,7 +1185,18 @@ panel.addEventListener('submit', async (evt) => {
   const p = state.panel;
   submit.disabled = true;
   try {
-    if (form.dataset.form === 'note') {
+    if (form.dataset.form === 'rep-new' || form.dataset.form === 'rep-edit') {
+      const isNew = form.dataset.form === 'rep-new';
+      const body = { name: data.name, email: data.email, phone: data.phone };
+      if (isNew) await api('POST', '/api/reps', body);
+      else await api('PATCH', `/api/reps/${form.dataset.rep}`, body);
+      state.editRepId = null;
+      state.panelDirty = false;
+      await sync();
+      rerenderAdmin();
+      toast(isNew ? `Added ${data.name.trim()}` : 'Saved');
+      if (isNew) panel.querySelector('[data-form="rep-new"] input[name="name"]')?.focus();
+    } else if (form.dataset.form === 'note') {
       if (!data.body.trim()) { toast('Write something first'); return; }
       ensureName();
       await api('POST', `/api/nodes/${p.id}/notes`, { body: data.body });
@@ -1218,6 +1277,127 @@ async function deleteEdge(id) {
     toast('Connection deleted');
   } catch (err) { toast(err.message, true); }
 }
+
+// ---------- admin ----------
+
+const adminDialog = $('#admin-dialog');
+
+function repRowHtml(r) {
+  if (state.editRepId === r.id) {
+    return `<li><form class="rep-form" data-form="rep-edit" data-rep="${r.id}">
+      <input name="name" value="${esc(r.name)}" required maxlength="100" placeholder="Name" aria-label="Name">
+      <div class="row2">
+        <input name="email" type="email" value="${esc(r.email)}" maxlength="300" placeholder="Email" aria-label="Email">
+        <input name="phone" type="tel" value="${esc(r.phone)}" maxlength="300" placeholder="Phone" aria-label="Phone">
+      </div>
+      <div class="row-btns">
+        <button type="submit" class="btn btn-sm btn-primary">Save</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-rep-act="cancel">Cancel</button>
+      </div>
+    </form></li>`;
+  }
+  const owned = [...state.nodes.values()].filter((n) => n.owner_rep === r.name).length;
+  const detail = [r.email, r.phone, plural(owned, 'record', 'records')].filter(Boolean).join(' · ');
+  return `<li class="${r.active ? '' : 'inactive'}">
+    <span class="avatar avatar-sm" style="--hue:${r.active ? 'var(--accent)' : 'var(--muted)'}">${esc(initials(r.name))}</span>
+    <span class="who"><b>${esc(r.name)}</b>${r.active ? '' : ' <span class="pill">Inactive</span>'}<span>${esc(detail)}</span></span>
+    <span class="rep-actions">
+      <button class="btn btn-sm btn-ghost" data-rep-act="edit" data-rep="${r.id}">Edit</button>
+      <button class="btn btn-sm btn-ghost" data-rep-act="toggle" data-rep="${r.id}">${r.active ? 'Deactivate' : 'Activate'}</button>
+      <button class="btn btn-sm btn-danger-ghost" data-rep-act="delete" data-rep="${r.id}">Delete</button>
+    </span>
+  </li>`;
+}
+
+function openAdminPanel() {
+  const reps = [...state.reps].sort((a, b) => (b.active - a.active) || byName(a, b));
+  showPanel({ kind: 'admin' }, `${panelHead('Admin', 'pill-company', 'Settings')}
+    <div class="section">
+      <h3>Reps <span>${activeReps().length} active</span></h3>
+      <p class="muted">Reps appear in the “You” and “Owner rep” dropdowns. If someone leaves, deactivate them so their name stays on their records.</p>
+      <form class="rep-form" data-form="rep-new">
+        <input name="name" required maxlength="100" placeholder="Rep name" aria-label="Rep name">
+        <div class="row2">
+          <input name="email" type="email" maxlength="300" placeholder="Email (optional)" aria-label="Email">
+          <input name="phone" type="tel" maxlength="300" placeholder="Phone (optional)" aria-label="Phone">
+        </div>
+        <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">+ Add rep</button></div>
+      </form>
+      ${reps.length ? `<ul class="rep-list">${reps.map(repRowHtml).join('')}</ul>` : '<p class="muted">No reps yet.</p>'}
+    </div>
+    <div class="section"><button class="btn btn-sm" data-rep-act="logout">Log out of admin</button></div>`);
+}
+
+function rerenderAdmin() {
+  if (state.panel?.kind !== 'admin') return;
+  const scroll = panel.scrollTop;
+  openAdminPanel();
+  panel.scrollTop = scroll;
+}
+
+async function handleRepAction(act, id) {
+  const rep = state.reps.find((r) => r.id === id);
+  try {
+    if (act === 'logout') {
+      await api('POST', '/api/admin/logout');
+      closePanel();
+      toast('Logged out of admin');
+      return;
+    }
+    if (act === 'edit' || act === 'cancel') {
+      state.editRepId = act === 'edit' ? id : null;
+      state.panelDirty = false;
+      rerenderAdmin();
+      return;
+    }
+    if (act === 'toggle') await api('PATCH', `/api/reps/${id}`, { active: !rep.active });
+    if (act === 'delete') {
+      if (!confirm(`Remove ${rep.name} from the rep list? Their name stays on records they own. To keep them in history, use Deactivate instead.`)) return;
+      await api('DELETE', `/api/reps/${id}`);
+    }
+    state.panelDirty = false;
+    await sync();
+    rerenderAdmin();
+  } catch (err) {
+    toast(err.message, true);
+    if (/admin login/i.test(err.message)) closePanel();
+  }
+}
+
+$('#btn-admin').addEventListener('click', async () => {
+  if (state.panel?.kind === 'admin') { closePanel(); return; }
+  try {
+    const me = await (await fetch('/api/admin/me', { cache: 'no-store' })).json();
+    if (me.admin) {
+      openAdminPanel();
+    } else if (!me.configured) {
+      toast('Admin isn’t set up yet: add an ADMIN_PASSWORD setting in Render → Environment', true);
+    } else {
+      $('#admin-error').hidden = true;
+      $('#admin-password').value = '';
+      adminDialog.showModal();
+    }
+  } catch {
+    toast('Can’t reach the server', true);
+  }
+});
+
+adminDialog.addEventListener('click', (evt) => {
+  if (evt.target === adminDialog || evt.target.closest('[data-close]')) adminDialog.close();
+});
+
+$('#admin-login').addEventListener('submit', async (evt) => {
+  evt.preventDefault();
+  try {
+    await api('POST', '/api/admin/login', { password: $('#admin-password').value });
+    adminDialog.close();
+    openAdminPanel();
+    toast('Logged in as admin');
+  } catch (err) {
+    $('#admin-error').textContent = err.message;
+    $('#admin-error').hidden = false;
+  }
+});
 
 // ---------- activity ----------
 
@@ -1326,7 +1506,7 @@ $('#empty').addEventListener('click', (evt) => {
 });
 
 document.addEventListener('keydown', (evt) => {
-  if (evt.key !== 'Escape' || dataDialog.open) return;
+  if (evt.key !== 'Escape' || dataDialog.open || adminDialog.open) return;
   if (state.connecting) stopConnect();
   else if (state.focusId != null) clearFocus();
   else if (state.panel) closePanel();

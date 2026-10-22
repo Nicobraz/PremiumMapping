@@ -36,7 +36,9 @@
     <label class="me">
       <span>You</span>
       <input id="me" type="text" placeholder="Your name" maxlength="60" autocomplete="name">
+      <select id="me-select" aria-label="Who are you?" hidden></select>
     </label>
+    <button id="btn-admin" class="icon-btn" title="Admin settings" aria-label="Admin settings">⚙</button>
   </div>
 </header>
 
@@ -116,6 +118,23 @@
     <p>Save the whole map as an image for a deck or email.</p>
     <div class="row-btns"><button id="btn-png" class="btn">Save as PNG</button></div>
   </section>
+</dialog>
+
+<dialog id="admin-dialog" class="dialog">
+  <form id="admin-login" method="dialog">
+    <div class="panel-head">
+      <h2>Admin login</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
+    </div>
+    <section>
+      <p>Admins can add and manage reps.</p>
+      <label class="stack">Password
+        <input id="admin-password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="admin-error" class="error-text" hidden></p>
+      <div class="row-btns"><button type="submit" class="btn btn-primary">Log in</button></div>
+    </section>
+  </form>
 </dialog>
 
 <datalist id="owner-list"></datalist>

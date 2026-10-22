@@ -8,16 +8,19 @@ recorded in the activity feed. Set EDIT_KEY to require a shared passcode.
 """
 
 import csv
+import hashlib
 import hmac
 import io
 import math
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
+from functools import wraps
 from urllib.parse import unquote
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_from_directory, session
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -25,6 +28,7 @@ DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "data", "pss_connect.
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 EDIT_KEY = os.environ.get("EDIT_KEY", "")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 NODE_TYPES = ("company", "person")
 REL_TYPES = ("knows", "reports_to", "referred", "partner", "vendor", "competitor", "other")
@@ -77,6 +81,14 @@ CREATE TABLE IF NOT EXISTS notes (
     author      TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    email       TEXT NOT NULL DEFAULT '',
+    phone       TEXT NOT NULL DEFAULT '',
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
     value  INTEGER NOT NULL
@@ -88,6 +100,14 @@ CREATE INDEX IF NOT EXISTS idx_notes_node ON notes(node_id);
 """
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+# Changing ADMIN_PASSWORD changes the derived key, which signs every admin out.
+app.secret_key = os.environ.get("SECRET_KEY") or hashlib.sha256(
+    f"pss-connect|{ADMIN_PASSWORD}|{DATABASE_URL or DB_PATH}".encode()).hexdigest()
+app.config.update(
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")),  # Render serves over HTTPS
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+)
 
 
 # ---------- database ----------
@@ -233,6 +253,7 @@ def snapshot(db):
         "nodes": [dict(r) for r in db.execute("SELECT * FROM nodes ORDER BY id")],
         "edges": [dict(r) for r in db.execute("SELECT * FROM edges ORDER BY id")],
         "notes": [dict(r) for r in db.execute("SELECT * FROM notes ORDER BY id")],
+        "reps": [dict(r) for r in db.execute("SELECT * FROM reps ORDER BY name")],
     }
 
 
@@ -311,9 +332,24 @@ def clean_edge_fields(data):
 
 # ---------- access ----------
 
+def is_admin():
+    return bool(ADMIN_PASSWORD) and session.get("admin") is True
+
+
+def admin_only(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not is_admin():
+            return bad("Admin login required", 403)
+        return view(*args, **kwargs)
+    return wrapper
+
+
 @app.before_request
 def require_edit_key():
     if not EDIT_KEY or not request.path.startswith("/api/"):
+        return None
+    if request.path.startswith("/api/admin/") or is_admin():
         return None
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
@@ -522,6 +558,125 @@ def delete_note(note_id):
     return jsonify({"ok": True})
 
 
+# ---------- admin ----------
+
+_failed_logins = {}  # ip -> (failures, first failure time)
+_failed_lock = threading.Lock()
+MAX_FAILURES, LOCKOUT_SECS = 8, 600
+
+
+def client_ip():
+    return (request.access_route or [request.remote_addr or "?"])[0]
+
+
+@app.get("/api/admin/me")
+def admin_me():
+    return jsonify({"configured": bool(ADMIN_PASSWORD), "admin": is_admin()})
+
+
+@app.post("/api/admin/login")
+def admin_login():
+    if not ADMIN_PASSWORD:
+        return bad("No admin password is set. Add ADMIN_PASSWORD in Render → Environment.", 503)
+    ip = client_ip()
+    with _failed_lock:
+        failures, since = _failed_logins.get(ip, (0, 0.0))
+        if time.time() - since > LOCKOUT_SECS:
+            failures, since = 0, 0.0
+        if failures >= MAX_FAILURES:
+            return bad("Too many wrong attempts. Try again in 10 minutes.", 429)
+    password = str((request.get_json(silent=True) or {}).get("password") or "")
+    if not hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode()):
+        time.sleep(0.5)
+        with _failed_lock:
+            _failed_logins[ip] = (failures + 1, since or time.time())
+        return bad("Wrong password", 400)
+    with _failed_lock:
+        _failed_logins.pop(ip, None)
+    session.permanent = True
+    session["admin"] = True
+    return jsonify({"admin": True})
+
+
+@app.post("/api/admin/logout")
+def admin_logout():
+    session.pop("admin", None)
+    return jsonify({"admin": False})
+
+
+def clean_rep_fields(db, data, rep_id=None):
+    out = {}
+    if "name" in data:
+        name = str(data["name"] or "").strip()[:100]
+        if not name:
+            return None, "Name is required"
+        clash = db.execute("SELECT id FROM reps WHERE LOWER(name) = LOWER(?) AND id != ?",
+                           (name, rep_id or 0)).fetchone()
+        if clash:
+            return None, f"There's already a rep named {name}"
+        out["name"] = name
+    for field in ("email", "phone"):
+        if field in data:
+            out[field] = str(data[field] or "").strip()[:300]
+    if "active" in data:
+        out["active"] = 1 if data["active"] else 0
+    return out, None
+
+
+@app.post("/api/reps")
+@admin_only
+def create_rep():
+    data = request.get_json(silent=True) or {}
+    if not str(data.get("name") or "").strip():
+        return bad("Name is required")
+    db = get_db()
+    values, err = clean_rep_fields(db, {"active": 1, **data})
+    if err:
+        return bad(err)
+    values["created_at"] = now()
+    rep_id = db.insert("reps", values)
+    log(db, "rep", f"Added rep {values['name']}")
+    bump_version(db)
+    db.commit()
+    return jsonify(dict(db.execute("SELECT * FROM reps WHERE id = ?", (rep_id,)).fetchone())), 201
+
+
+@app.patch("/api/reps/<int:rep_id>")
+@admin_only
+def update_rep(rep_id):
+    db = get_db()
+    existing = db.execute("SELECT * FROM reps WHERE id = ?", (rep_id,)).fetchone()
+    if not existing:
+        return bad("Not found", 404)
+    values, err = clean_rep_fields(db, request.get_json(silent=True) or {}, rep_id)
+    if err:
+        return bad(err)
+    if values:
+        assignments = ", ".join(f"{col} = ?" for col in values)
+        db.execute(f"UPDATE reps SET {assignments} WHERE id = ?", [*values.values(), rep_id])
+        if values.get("name", existing["name"]) != existing["name"]:
+            # Keep ownership pointing at the renamed rep.
+            db.execute("UPDATE nodes SET owner_rep = ? WHERE owner_rep = ?", (values["name"], existing["name"]))
+        log(db, "rep", f"Updated rep {values.get('name', existing['name'])}")
+        bump_version(db)
+        db.commit()
+    return jsonify(dict(db.execute("SELECT * FROM reps WHERE id = ?", (rep_id,)).fetchone()))
+
+
+@app.delete("/api/reps/<int:rep_id>")
+@admin_only
+def delete_rep(rep_id):
+    db = get_db()
+    existing = db.execute("SELECT * FROM reps WHERE id = ?", (rep_id,)).fetchone()
+    if not existing:
+        return bad("Not found", 404)
+    db.execute("DELETE FROM reps WHERE id = ?", (rep_id,))
+    log(db, "rep", f"Removed rep {existing['name']}")
+    bump_version(db)
+    db.commit()
+    return jsonify({"ok": True})
+
+
 # ---------- activity ----------
 
 @app.get("/api/activity")
@@ -561,6 +716,15 @@ def import_json():
     db = get_db()
     ts = now()
     db.execute("DELETE FROM notes")
+    if isinstance(data.get("reps"), list):
+        db.execute("DELETE FROM reps")
+        for rep in data["reps"]:
+            name = str(rep.get("name") or "").strip()[:100] if isinstance(rep, dict) else ""
+            if name:
+                db.insert("reps", {"name": name, "email": str(rep.get("email") or "")[:300],
+                                   "phone": str(rep.get("phone") or "")[:300],
+                                   "active": 1 if rep.get("active", 1) else 0,
+                                   "created_at": str(rep.get("created_at") or ts)})
     db.execute("DELETE FROM edges")
     db.execute("DELETE FROM nodes")
     # Companies first so people's company_id references already exist.

@@ -13,6 +13,7 @@ few seconds.
 - **+ Add connection** on a card connects people without touching the map, and coworkers are listed first. The "Also at…" chips connect coworkers who aren't linked yet in one click.
 - **Directory** lists every company (with headcount) and every person. Filter it, then click to open a card.
 - **Connect** (top bar): the map way, where you click one dot and then another.
+- **⚙ Admin**: log in with the admin password to add, edit, deactivate or remove reps. Reps then appear as dropdowns for **You** (who's making changes) and **Owner rep**.
 - **Double-click** a person to show only their network within 2 steps. This answers "who can get us in front of this decision maker?"
 - **Drag** dots to arrange the map. Positions are saved for everyone. ✣ auto-arranges everything.
 - **Legend chips** show or hide relationship types. The **rep / tag** dropdowns highlight one rep's or one tag's records.
@@ -61,5 +62,6 @@ Download a backup regularly from **Data → Download backup**, or fetch
 | `DATABASE_URL` | *(unset)*            | Postgres connection string; if unset, SQLite is used |
 | `DB_PATH`  | `./data/pss_connect.db`  | SQLite file location                    |
 | `EDIT_KEY` | *(unset)*                | Shared passcode required for edits      |
+| `ADMIN_PASSWORD` | *(unset)*          | Password for the ⚙ admin panel; admin is off until set |
 
 Brand colors are CSS variables at the top of `static/styles.css`. Change `--accent` to the PSS color.
