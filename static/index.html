@@ -28,6 +28,20 @@
     <button id="btn-add-company" class="btn">+ Company</button>
     <button id="btn-add-person" class="btn">+ Person</button>
     <button id="btn-connect" class="btn btn-primary">Connect</button>
+    <div class="filter-wrap">
+      <button id="btn-filter" class="btn btn-ghost" aria-haspopup="true" aria-expanded="false" aria-controls="filter-menu">
+        Filter <span id="filter-count" class="count-badge" hidden></span>
+      </button>
+      <div id="filter-menu" class="filter-menu" hidden>
+        <label>City<select id="filter-city"><option value="">All cities</option></select></label>
+        <label>Tag<select id="filter-tag"><option value="">All tags</option></select></label>
+        <label>Rep<select id="filter-owner"><option value="">All reps</option></select></label>
+        <div class="filter-actions">
+          <button id="btn-clear-filters" type="button" class="btn btn-sm btn-ghost">Clear filters</button>
+          <button id="btn-filter-done" type="button" class="btn btn-sm btn-primary">Done</button>
+        </div>
+      </div>
+    </div>
     <button id="btn-directory" class="btn btn-ghost" title="Look up companies and people">Directory</button>
     <button id="btn-activity" class="btn btn-ghost" title="Recent changes">Activity</button>
     <button id="btn-data" class="btn btn-ghost" title="Import, export, backup">Data</button>
@@ -39,9 +53,7 @@
 <div class="filterbar">
   <div id="legend" class="legend" aria-label="Relationship types (click to show or hide)"></div>
   <div class="filters">
-    <select id="filter-owner" aria-label="Filter by owner rep"><option value="">All reps</option></select>
-    <select id="filter-tag" aria-label="Filter by tag"><option value="">All tags</option></select>
-    <button id="btn-clear-filters" class="btn btn-ghost btn-sm" hidden>Clear</button>
+    <div id="active-filters" class="active-filters"></div>
     <span id="stats" class="stats"></span>
   </div>
 </div>

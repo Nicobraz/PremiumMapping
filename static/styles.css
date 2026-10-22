@@ -465,3 +465,33 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .rep-form .check small { font-weight: 400; color: var(--muted); }
 .rep-form .check input { width: auto; }
 .rep-form:not(:has(input[name="is_admin"]:checked)) .admin-pass { display: none; }
+
+/* ---------- filter menu ---------- */
+.filter-wrap { position: relative; }
+#btn-filter.active { background: var(--accent-soft); color: var(--accent); }
+.count-badge {
+  min-width: 18px; padding: 1px 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink);
+  font-size: 11px; font-weight: 700; line-height: 16px; text-align: center;
+}
+.filter-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; width: 260px;
+  display: flex; flex-direction: column; gap: 10px; padding: 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+}
+.filter-menu label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.filter-menu select {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+  font-size: 13.5px; font-weight: 400; color: var(--text);
+}
+.filter-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.active-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.filter-chip {
+  padding: 3px 9px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft);
+  color: var(--accent); font-size: 12px; cursor: pointer;
+}
+.filter-chip b { font-weight: 700; }
+.who .tags { padding: 4px 0 0; }
+.hero .tags { padding: 4px 0 0; }
+@media (max-width: 720px) {
+  .filter-menu { position: fixed; top: 120px; left: 16px; right: 16px; width: auto; }
+}

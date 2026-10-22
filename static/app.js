@@ -42,6 +42,7 @@ const state = {
   hiddenRels: new Set(),
   ownerFilter: '',
   tagFilter: '',
+  cityFilter: '',
   firstLoad: true,
 };
 
@@ -242,7 +243,10 @@ const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 darkQuery.addEventListener?.('change', () => cy.style(graphStyle()));
 
 function nodeElement(n) {
-  const label = n.type === 'person' && n.title ? `${n.name}\n${n.title}` : n.name;
+  const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const label = n.type === 'person'
+    ? (n.title ? `${n.name}\n${n.title}` : n.name)
+    : (tags.length ? `${n.name}\n${tags.join(' · ')}` : n.name);
   return {
     group: 'nodes',
     data: { id: `n${n.id}`, nid: n.id, kind: n.type, label, color: nodeColor(n) },
@@ -481,61 +485,125 @@ $('#legend').addEventListener('click', (evt) => {
   applyFilters();
 });
 
-function applyFilters() {
-  const owner = state.ownerFilter.toLowerCase();
+// City is the part of Location before the first comma ("Dallas, TX" -> "Dallas").
+const cityOf = (n) => String(n.location || '').split(',')[0].trim();
+
+function activeFilterCount() {
+  return [state.cityFilter, state.tagFilter, state.ownerFilter].filter(Boolean).length;
+}
+
+// A person also matches through their company (and a company through its
+// people), so filtering by a company's tag or city keeps its team in view.
+function filterMatches() {
+  const city = state.cityFilter.toLowerCase();
   const tag = state.tagFilter.toLowerCase();
+  const owner = state.ownerFilter.toLowerCase();
+  const own = (n) => (!tag || splitTags(n.tags).includes(tag)) && (!city || cityOf(n).toLowerCase() === city);
+  const matched = new Set();
+  for (const n of state.nodes.values()) {
+    if (owner && n.owner_rep.trim().toLowerCase() !== owner) continue;
+    const company = companyOf(n);
+    if (own(n) || (company && own(company)) || (n.type === 'company' && peopleAt(n.id).some(own))) matched.add(n.id);
+  }
+  return matched;
+}
+
+function applyFilters() {
+  const matched = activeFilterCount() ? filterMatches() : null;
   cy.batch(() => {
     cy.edges().forEach((e) => e.toggleClass('hidden-rel', state.hiddenRels.has(e.data('rel'))));
     cy.elements().removeClass('dim');
-    if (!owner && !tag) return;
-    cy.nodes().forEach((el) => {
-      const n = state.nodes.get(el.data('nid'));
-      const ownerOk = !owner || n.owner_rep.trim().toLowerCase() === owner;
-      const tagOk = !tag || splitTags(n.tags).includes(tag);
-      if (!(ownerOk && tagOk)) el.addClass('dim');
-    });
+    if (!matched) return;
+    cy.nodes().forEach((el) => { if (!matched.has(el.data('nid'))) el.addClass('dim'); });
     cy.edges().forEach((e) => {
       if (e.source().hasClass('dim') || e.target().hasClass('dim')) e.addClass('dim');
     });
   });
-  $('#btn-clear-filters').hidden = !owner && !tag && !state.hiddenRels.size;
+  renderFilterSummary(matched);
+  if (state.panel?.kind === 'directory') renderDirectoryList();
+  return matched;
 }
 
-function fillSelect(select, values, allLabel, current) {
-  const opts = [`<option value="">${allLabel}</option>`]
-    .concat(values.map((v) => `<option value="${esc(v)}" ${v.toLowerCase() === current.toLowerCase() ? 'selected' : ''}>${esc(v)}</option>`));
-  select.innerHTML = opts.join('');
+function renderFilterSummary(matched) {
+  const count = activeFilterCount();
+  $('#filter-count').hidden = !count;
+  $('#filter-count').textContent = count;
+  $('#btn-filter').classList.toggle('active', !!count);
+  const chips = [['city', 'City', state.cityFilter], ['tag', 'Tag', state.tagFilter], ['owner', 'Rep', state.ownerFilter]]
+    .filter(([, , value]) => value)
+    .map(([key, label, value]) => `<button type="button" class="filter-chip" data-clear="${key}" title="Remove this filter">${label}: <b>${esc(value)}</b> ×</button>`);
+  if (matched) chips.push(`<span class="muted">${plural(matched.size, 'match', 'matches')}</span>`);
+  $('#active-filters').innerHTML = chips.join('');
+}
+
+function fillSelect(select, entries, allLabel, current) {
+  select.innerHTML = [`<option value="">${allLabel}</option>`]
+    .concat(entries.map(({ value, label }) =>
+      `<option value="${esc(value)}" ${value.toLowerCase() === current.toLowerCase() ? 'selected' : ''}>${esc(label)}</option>`))
+    .join('');
+}
+
+function countedEntries(counts) {
+  return [...counts.values()]
+    .sort((a, b) => a.value.localeCompare(b.value))
+    .map(({ value, n }) => ({ value, label: `${value} (${n})` }));
 }
 
 function refreshFilterOptions() {
   const owners = new Map();
   const tags = new Map();
-  for (const r of activeReps()) owners.set(r.name.toLowerCase(), r.name);
+  const cities = new Map();
+  const bump = (map, value) => {
+    const key = value.toLowerCase();
+    if (!map.has(key)) map.set(key, { value, n: 0 });
+    map.get(key).n += 1;
+  };
+  for (const r of activeReps()) owners.set(r.name.toLowerCase(), { value: r.name, n: 0 });
   for (const n of state.nodes.values()) {
-    const o = n.owner_rep.trim();
-    if (o) owners.set(o.toLowerCase(), o);
-    for (const raw of String(n.tags || '').split(',')) {
-      const t = raw.trim();
-      if (t) tags.set(t.toLowerCase(), t);
-    }
+    if (n.owner_rep.trim()) bump(owners, n.owner_rep.trim());
+    for (const t of String(n.tags || '').split(',').map((x) => x.trim()).filter(Boolean)) bump(tags, t);
+    if (cityOf(n)) bump(cities, cityOf(n));
   }
-  const ownerList = [...owners.values()].sort((a, b) => a.localeCompare(b));
-  const tagList = [...tags.values()].sort((a, b) => a.localeCompare(b));
-  fillSelect($('#filter-owner'), ownerList, 'All reps', state.ownerFilter);
-  fillSelect($('#filter-tag'), tagList, 'All tags', state.tagFilter);
-  $('#owner-list').innerHTML = ownerList.map((o) => `<option value="${esc(o)}">`).join('');
+  fillSelect($('#filter-city'), countedEntries(cities), 'All cities', state.cityFilter);
+  fillSelect($('#filter-tag'), countedEntries(tags), 'All tags', state.tagFilter);
+  fillSelect($('#filter-owner'), countedEntries(owners), 'All reps', state.ownerFilter);
+  $('#owner-list').innerHTML = [...owners.values()].map((o) => `<option value="${esc(o.value)}">`).join('');
 }
 
-$('#filter-owner').addEventListener('change', (evt) => { state.ownerFilter = evt.target.value; applyFilters(); });
-$('#filter-tag').addEventListener('change', (evt) => { state.tagFilter = evt.target.value; applyFilters(); });
+function setFilter(key, value) {
+  state[`${key}Filter`] = value;
+  const matched = applyFilters();
+  const els = matched && matched.size
+    ? cy.nodes().filter((el) => matched.has(el.data('nid')))
+    : cy.elements();
+  if (els.length) cy.animate({ fit: { eles: els, padding: 70 }, duration: 350 });
+}
+
+const filterMenu = $('#filter-menu');
+function toggleFilterMenu(open) {
+  filterMenu.hidden = !open;
+  $('#btn-filter').setAttribute('aria-expanded', String(open));
+}
+$('#btn-filter').addEventListener('click', () => toggleFilterMenu(filterMenu.hidden));
+$('#btn-filter-done').addEventListener('click', () => toggleFilterMenu(false));
+document.addEventListener('click', (evt) => {
+  if (!filterMenu.hidden && !evt.target.closest('.filter-wrap')) toggleFilterMenu(false);
+});
+$('#filter-city').addEventListener('change', (evt) => setFilter('city', evt.target.value));
+$('#filter-tag').addEventListener('change', (evt) => setFilter('tag', evt.target.value));
+$('#filter-owner').addEventListener('change', (evt) => setFilter('owner', evt.target.value));
 $('#btn-clear-filters').addEventListener('click', () => {
-  state.ownerFilter = '';
+  state.cityFilter = '';
   state.tagFilter = '';
-  state.hiddenRels.clear();
-  $('#filter-owner').value = '';
-  $('#filter-tag').value = '';
-  buildLegend();
-  applyFilters();
+  state.ownerFilter = '';
+  refreshFilterOptions();
+  setFilter('city', '');
+});
+$('#active-filters').addEventListener('click', (evt) => {
+  const chip = evt.target.closest('[data-clear]');
+  if (!chip) return;
+  $(`#filter-${chip.dataset.clear}`).value = '';
+  setFilter(chip.dataset.clear, '');
 });
 
 function updateStats() {
@@ -787,6 +855,7 @@ function heroHtml(n, subtitle, extra) {
       <h2>${esc(n.name)}</h2>
       ${subtitle ? `<div class="hero-sub">${esc(subtitle)}</div>` : ''}
       ${extra || ''}
+      ${tagChipsHtml(n)}
     </div>
     <button class="icon-btn" data-act="close" aria-label="Close">×</button>
   </div>`;
@@ -802,12 +871,15 @@ function actionsHtml(n) {
   return `<div class="card-actions">${btns.join('')}</div>`;
 }
 
+function tagChipsHtml(n) {
+  const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  return tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : '';
+}
+
 function factsHtml(n, skip = []) {
   const facts = [['Email', n.email], ['Phone', n.phone], ['Location', n.location], ['Owner rep', n.owner_rep]]
     .filter(([label, value]) => value && !skip.includes(label));
-  const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
-  return (facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '')
-    + (tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : '');
+  return facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '';
 }
 
 function aboutHtml(n) {
@@ -1098,13 +1170,14 @@ function renderDirectoryList() {
   const list = $('#dir-list');
   if (!list) return;
   const q = state.dirQuery.trim().toLowerCase();
-  const matches = (n) => !q || [n.name, n.title, n.location, n.tags, n.owner_rep, companyOf(n)?.name]
-    .some((v) => String(v || '').toLowerCase().includes(q));
+  const filtered = activeFilterCount() ? filterMatches() : null;
+  const matches = (n) => (!filtered || filtered.has(n.id)) && (!q || [n.name, n.title, n.location, n.tags, n.owner_rep, companyOf(n)?.name]
+    .some((v) => String(v || '').toLowerCase().includes(q)));
   if (state.dirTab === 'companies') {
     const items = [...state.nodes.values()].filter((n) => n.type === 'company' && matches(n)).sort(byName);
     list.innerHTML = items.length ? items.map((c) => {
       const detail = [plural(peopleAt(c.id).length, 'person', 'people'), c.location].filter(Boolean).join(' · ');
-      return `<li data-goto="${c.id}">${avatar(c, 'avatar-sm')}<span class="who"><b>${esc(c.name)}</b><span>${esc(detail)}</span></span></li>`;
+      return `<li data-goto="${c.id}">${avatar(c, 'avatar-sm')}<span class="who"><b>${esc(c.name)}</b><span>${esc(detail)}</span>${tagChipsHtml(c)}</span></li>`;
     }).join('') : '<li class="muted">No companies match.</li>';
   } else {
     const items = [...state.nodes.values()].filter((n) => n.type === 'person' && matches(n)).sort(byName);
@@ -1598,7 +1671,8 @@ $('#empty').addEventListener('click', (evt) => {
 
 document.addEventListener('keydown', (evt) => {
   if (evt.key !== 'Escape' || dataDialog.open || adminDialog.open) return;
-  if (state.connecting) stopConnect();
+  if (!filterMenu.hidden) toggleFilterMenu(false);
+  else if (state.connecting) stopConnect();
   else if (state.focusId != null) clearFocus();
   else if (state.panel) closePanel();
   else closeActivity();

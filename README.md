@@ -23,7 +23,7 @@ email, and changes show up for everyone within a few seconds.
 - **Lead ownership**: a lead a rep adds is assigned to that rep automatically. Reps can edit any lead's details, notes and connections, but **only the admin can change who a lead is assigned to**. Restoring a backup is also admin-only.
 - **Double-click** a person to show only their network within 2 steps. This answers "who can get us in front of this decision maker?"
 - **Drag** dots to arrange the map. Positions are saved for everyone. ✣ auto-arranges everything.
-- **Legend chips** show or hide relationship types. The **rep / tag** dropdowns highlight one rep's or one tag's records.
+- **Legend chips** show or hide relationship types. **Filter** (top bar) narrows the map and Directory by **city** (from Location), **tag** or **rep**; a company's tag or city also keeps its people in view. Company tags show under the company name on the map.
 - **Activity** shows who changed what. **Data** imports a contacts CSV, downloads or restores a backup, and saves the map as a PNG.
 
 ## Run locally
