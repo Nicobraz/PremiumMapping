@@ -417,3 +417,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .rep-list li.inactive b { color: var(--muted); }
 .rep-actions { display: flex; gap: 2px; width: 100%; padding-left: 36px; }
 .rep-actions .btn { padding: 3px 8px; }
+
+.storage-warning {
+  padding: 8px 16px; background: #b91c1c; color: #fff; font-size: 13px; font-weight: 600;
+}
+.storage-warning code { background: rgba(255, 255, 255, .2); padding: 1px 5px; border-radius: 4px; }

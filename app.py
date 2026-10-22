@@ -30,6 +30,8 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "data", "pss_connect.db"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+# On Render the local disk is wiped on every restart, so SQLite there means data loss.
+TEMPORARY_STORAGE = bool(os.environ.get("RENDER")) and not USE_POSTGRES
 EDIT_KEY = os.environ.get("EDIT_KEY", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
@@ -430,7 +432,7 @@ def get_graph():
     remember_version(version, generation)
     if since is not None and since == version:
         return jsonify({"version": version, "unchanged": True})
-    return jsonify({"version": version, **snapshot(db)})
+    return jsonify({"version": version, "temporary_storage": TEMPORARY_STORAGE, **snapshot(db)})
 
 
 # ---------- nodes ----------

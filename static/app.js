@@ -399,6 +399,7 @@ async function doSync() {
       state.notes.get(note.node_id).push(note);
     }
     state.reps = data.reps || [];
+    $('#storage-warning').hidden = !data.temporary_storage;
     renderMe();
     state.noteText = new Map([...state.notes].map(([id, list]) =>
       [id, list.map((note) => note.body).join('\n').toLowerCase()]));
