@@ -89,9 +89,10 @@ if USE_POSTGRES:
     from psycopg_pool import ConnectionPool
 
     # min_size=0 and max_idle let idle connections close, so a free Neon
-    # database can auto-suspend when nobody is using the map.
+    # database can auto-suspend when nobody is using the map. Prepared
+    # statements are off so Neon's pooled (PgBouncer) URL works too.
     _pool = ConnectionPool(DATABASE_URL, min_size=0, max_size=4, max_idle=60,
-                           kwargs={"row_factory": dict_row},
+                           kwargs={"row_factory": dict_row, "prepare_threshold": None},
                            check=ConnectionPool.check_connection, open=True)
 
 
