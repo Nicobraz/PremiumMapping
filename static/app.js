@@ -131,7 +131,18 @@ $('#signin-form').addEventListener('submit', async (evt) => {
   const err = $('#signin-error');
   err.hidden = true;
   try {
-    await api('POST', '/api/login', { email: $('#signin-email').value });
+    const passwordBox = $('#signin-password');
+    const result = await api('POST', '/api/login', {
+      email: $('#signin-email').value,
+      password: passwordBox.hidden ? '' : passwordBox.value,
+    });
+    if (result.needs_password) {
+      passwordBox.hidden = false;
+      passwordBox.required = true;
+      $('#signin-hint').textContent = 'You’re an admin, so enter your password too.';
+      passwordBox.focus();
+      return;
+    }
     await loadMe();
   } catch (e) {
     err.textContent = e.message;
@@ -1221,7 +1232,13 @@ panel.addEventListener('submit', async (evt) => {
   const p = state.panel;
   submit.disabled = true;
   try {
-    if (form.dataset.form === 'admin-password') {
+    if (form.dataset.form === 'my-password') {
+      if (data.new_password !== data.confirm) { toast('The two passwords don’t match', true); return; }
+      await api('POST', '/api/me/password', { new_password: data.new_password });
+      state.panelDirty = false;
+      form.reset();
+      toast('Your password was changed');
+    } else if (form.dataset.form === 'admin-password') {
       if (data.new_password !== data.confirm) { toast('The two passwords don’t match', true); return; }
       await api('POST', '/api/admin/password', { new_password: data.new_password });
       state.panelDirty = false;
@@ -1229,7 +1246,8 @@ panel.addEventListener('submit', async (evt) => {
       toast('Admin password changed');
     } else if (form.dataset.form === 'rep-new' || form.dataset.form === 'rep-edit') {
       const isNew = form.dataset.form === 'rep-new';
-      const body = { name: data.name, email: data.email, phone: data.phone };
+      const body = { name: data.name, email: data.email, phone: data.phone, is_admin: !!data.is_admin };
+      if (data.password) body.password = data.password;
       if (isNew) await api('POST', '/api/reps', body);
       else await api('PATCH', `/api/reps/${form.dataset.rep}`, body);
       state.editRepId = null;
@@ -1330,6 +1348,8 @@ function repRowHtml(r) {
         <input name="email" type="email" required value="${esc(r.email)}" maxlength="300" placeholder="Work email (to sign in)" aria-label="Work email">
         <input name="phone" type="tel" value="${esc(r.phone)}" maxlength="300" placeholder="Phone" aria-label="Phone">
       </div>
+      <label class="check"><input type="checkbox" name="is_admin" ${r.is_admin ? 'checked' : ''}> Admin <small>(manage reps, reassign leads; signs in with a password)</small></label>
+      <input class="admin-pass" name="password" type="password" minlength="8" autocomplete="new-password" placeholder="${r.is_admin ? 'New password (leave blank to keep)' : 'Password for this admin'}" aria-label="Admin password">
       <div class="row-btns">
         <button type="submit" class="btn btn-sm btn-primary">Save</button>
         <button type="button" class="btn btn-sm btn-ghost" data-rep-act="cancel">Cancel</button>
@@ -1340,7 +1360,7 @@ function repRowHtml(r) {
   const detail = [r.email || 'No email: can’t sign in', r.phone, plural(owned, 'record', 'records')].filter(Boolean).join(' · ');
   return `<li class="${r.active ? '' : 'inactive'}">
     <span class="avatar avatar-sm" style="--hue:${r.active ? 'var(--accent)' : 'var(--muted)'}">${esc(initials(r.name))}</span>
-    <span class="who"><b>${esc(r.name)}</b>${r.active ? '' : ' <span class="pill">Inactive</span>'}<span>${esc(detail)}</span></span>
+    <span class="who"><b>${esc(r.name)}</b>${r.is_admin ? ' <span class="pill pill-company">Admin</span>' : ''}${r.active ? '' : ' <span class="pill">Inactive</span>'}<span>${esc(detail)}</span></span>
     <span class="rep-actions">
       <button class="btn btn-sm btn-ghost" data-rep-act="edit" data-rep="${r.id}">Edit</button>
       <button class="btn btn-sm btn-ghost" data-rep-act="toggle" data-rep="${r.id}">${r.active ? 'Deactivate' : 'Activate'}</button>
@@ -1361,12 +1381,25 @@ function openAdminPanel() {
           <input name="email" type="email" required maxlength="300" placeholder="Work email (to sign in)" aria-label="Work email">
           <input name="phone" type="tel" maxlength="300" placeholder="Phone (optional)" aria-label="Phone">
         </div>
+      <label class="check"><input type="checkbox" name="is_admin" > Admin <small>(manage reps, reassign leads; signs in with a password)</small></label>
+      <input class="admin-pass" name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Password for this admin" aria-label="Admin password">
         <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">+ Add rep</button></div>
       </form>
       ${reps.length ? `<ul class="rep-list">${reps.map(repRowHtml).join('')}</ul>` : '<p class="muted">No reps yet.</p>'}
     </div>
+    ${state.me?.is_admin ? `<div class="section">
+      <h3>Your password</h3>
+      <form class="rep-form" data-form="my-password">
+        <div class="row2">
+          <input name="new_password" type="password" minlength="8" required autocomplete="new-password" placeholder="New password" aria-label="New password">
+          <input name="confirm" type="password" minlength="8" required autocomplete="new-password" placeholder="Type it again" aria-label="Confirm new password">
+        </div>
+        <div class="row-btns"><button type="submit" class="btn btn-sm">Change my password</button></div>
+      </form>
+    </div>` : ''}
     <div class="section">
-      <h3>Admin password</h3>
+      <h3>Backup admin password</h3>
+      <p class="muted">Used with “Admin login” on the sign-in screen, in case an admin gets locked out.</p>
       ${state.adminEnvManaged
         ? '<p class="muted">This password is set in Render (ADMIN_PASSWORD). Change it there.</p>'
         : `<form class="rep-form" data-form="admin-password">
@@ -1377,7 +1410,7 @@ function openAdminPanel() {
             <div class="row-btns"><button type="submit" class="btn btn-sm">Change password</button></div>
           </form>`}
     </div>
-    <div class="section"><button class="btn btn-sm" data-rep-act="logout">Log out of admin</button></div>`);
+    ${state.me?.is_admin ? '' : '<div class="section"><button class="btn btn-sm" data-rep-act="logout">Log out of admin</button></div>'}`);
 }
 
 function rerenderAdmin() {

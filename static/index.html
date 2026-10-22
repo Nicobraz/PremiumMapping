@@ -142,8 +142,9 @@
   <form id="signin-form" class="signin-card">
     <img class="signin-logo" src="/static/logo.svg" alt="Premium Surface Solutions">
     <h1>PSS <em>Connect</em></h1>
-    <p>Sign in with your work email.</p>
-    <input id="signin-email" type="email" autocomplete="email" required placeholder="you@company.com" aria-label="Work email">
+    <p id="signin-hint">Sign in with your work email.</p>
+    <input id="signin-email" type="email" autocomplete="username" required placeholder="you@company.com" aria-label="Work email">
+    <input id="signin-password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" hidden>
     <p id="signin-error" class="error-text" role="alert" hidden></p>
     <button type="submit" class="btn btn-primary">Sign in</button>
     <button type="button" id="signin-admin" class="link-btn">Admin login</button>

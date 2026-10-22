@@ -90,7 +90,9 @@ CREATE TABLE IF NOT EXISTS reps (
     email       TEXT NOT NULL DEFAULT '',
     phone       TEXT NOT NULL DEFAULT '',
     active      INTEGER NOT NULL DEFAULT 1,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    is_admin       INTEGER NOT NULL DEFAULT 0,
+    password_hash  TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
@@ -165,10 +167,28 @@ def schema_statements():
     return [stmt.strip() for stmt in sql.split(";") if stmt.strip()]
 
 
+# Columns added after the first release; existing databases get them on startup.
+MIGRATIONS = [
+    ("reps", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
+    ("reps", "password_hash", "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+def table_columns(db, table):
+    if USE_POSTGRES:
+        rows = db.execute("SELECT column_name AS name FROM information_schema.columns WHERE table_name = ?", (table,))
+    else:
+        rows = db.execute(f"PRAGMA table_info({table})")
+    return {r["name"] for r in rows}
+
+
 def _init_schema(db):
     """Creates tables and returns the session-signing secret (generated once, kept in the DB)."""
     for stmt in schema_statements():
         db.execute(stmt)
+    for table, column, definition in MIGRATIONS:
+        if column not in table_columns(db, table):
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     db.execute("INSERT INTO meta (key, value) VALUES ('version', 0) ON CONFLICT (key) DO NOTHING")
     db.execute("INSERT INTO settings (key, value) VALUES ('session_secret', ?) ON CONFLICT (key) DO NOTHING",
                (secrets.token_hex(32),))
@@ -215,18 +235,21 @@ def close_db(_exc):
 # answers "nothing changed" without touching the database, which keeps a free
 # Postgres asleep. This relies on a single worker process (see render.yaml).
 _version_lock = threading.Lock()
-_known = {"version": None, "generation": 0}
+_known = {"version": None, "generation": 0, "at": 0.0}
+CACHE_SECS = 30  # also pick up changes made outside the app (e.g. the CLI)
 
 
 def known_version():
     with _version_lock:
-        return _known["version"], _known["generation"]
+        fresh = time.time() - _known["at"] < CACHE_SECS
+        return (_known["version"] if fresh else None), _known["generation"]
 
 
 def remember_version(version, generation):
     with _version_lock:
         if _known["generation"] == generation:
             _known["version"] = version
+            _known["at"] = time.time()
 
 
 def forget_version():
@@ -244,12 +267,14 @@ _auth_cache = {}
 def auth_info():
     with _version_lock:
         cached, generation = _auth_cache.get("info"), _known["generation"]
-    if cached:
+    if cached and time.time() - cached["at"] < CACHE_SECS:
         return cached
     db = get_db()
     info = {
-        "reps": {r["id"]: dict(r) for r in db.execute("SELECT id, name, email, active FROM reps")},
+        "reps": {r["id"]: {**dict(r), "password_hash": "", "pw_fp": password_fingerprint(r["password_hash"])}
+                 for r in db.execute("SELECT id, name, email, active, is_admin, password_hash FROM reps")},
         "admin_fp": admin_fingerprint(db),
+        "at": time.time(),
     }
     with _version_lock:
         if _known["generation"] == generation:
@@ -257,12 +282,24 @@ def auth_info():
     return info
 
 
+def password_fingerprint(password_hash):
+    """Changes when the password changes, which signs that person's sessions out."""
+    return hashlib.sha256(f"rep|{password_hash}".encode()).hexdigest()[:24] if password_hash else ""
+
+
 def current_rep():
     rep_id = session.get("rep_id")
     if not isinstance(rep_id, int):
         return None
     rep = auth_info()["reps"].get(rep_id)
-    return rep if rep and rep["active"] else None  # deactivated reps are signed out
+    if not rep or not rep["active"]:
+        return None  # deactivated reps are signed out
+    if rep["is_admin"]:
+        # Admins signed in with a password; that session ends if the password changes.
+        token = session.get("rep_pw")
+        if not isinstance(token, str) or not rep["pw_fp"] or not hmac.compare_digest(token, rep["pw_fp"]):
+            return None
+    return rep
 
 
 def now():
@@ -299,12 +336,19 @@ def bad(message, status=400):
     return jsonify({"error": message}), status
 
 
+REP_PUBLIC_COLUMNS = "id, name, email, phone, active, is_admin, created_at"
+
+
+def rep_public(db, rep_id):
+    return dict(db.execute(f"SELECT {REP_PUBLIC_COLUMNS} FROM reps WHERE id = ?", (rep_id,)).fetchone())
+
+
 def snapshot(db):
     return {
         "nodes": [dict(r) for r in db.execute("SELECT * FROM nodes ORDER BY id")],
         "edges": [dict(r) for r in db.execute("SELECT * FROM edges ORDER BY id")],
         "notes": [dict(r) for r in db.execute("SELECT * FROM notes ORDER BY id")],
-        "reps": [dict(r) for r in db.execute("SELECT * FROM reps ORDER BY name")],
+        "reps": [dict(r) for r in db.execute(f"SELECT {REP_PUBLIC_COLUMNS} FROM reps ORDER BY name")],
     }
 
 
@@ -411,7 +455,10 @@ def check_admin_password(db, password):
 
 
 def is_admin():
-    token = session.get("admin")
+    rep = current_rep()
+    if rep and rep["is_admin"]:
+        return True
+    token = session.get("admin")  # the backup shared admin password
     if not isinstance(token, str):
         return False
     fingerprint = auth_info()["admin_fp"]
@@ -680,7 +727,7 @@ def clear_failures():
 def me_payload():
     rep = current_rep()
     return {
-        "rep": {"id": rep["id"], "name": rep["name"], "email": rep["email"]} if rep else None,
+        "rep": {"id": rep["id"], "name": rep["name"], "email": rep["email"], "is_admin": bool(rep["is_admin"])} if rep else None,
         "admin": is_admin(),
         "admin_configured": bool(auth_info()["admin_fp"]),
         "env_managed": bool(ADMIN_PASSWORD),
@@ -696,7 +743,9 @@ def me():
 def login():
     if too_many_failures():
         return bad("Too many attempts. Try again in 10 minutes.", 429)
-    email = str((request.get_json(silent=True) or {}).get("email") or "").strip().lower()
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email") or "").strip().lower()
+    password = str(data.get("password") or "")
     if "@" not in email:
         return bad("Enter your work email")
     rep = next((r for r in auth_info()["reps"].values()
@@ -704,10 +753,36 @@ def login():
     if not rep:
         note_failure()
         return bad("That email isn't on the team list. Ask your admin to add you.", 400)
+    if rep["is_admin"]:
+        if not password:
+            return jsonify({"needs_password": True})
+        stored = get_db().execute("SELECT password_hash FROM reps WHERE id = ?", (rep["id"],)).fetchone()
+        if not stored or not stored["password_hash"] or not check_password_hash(stored["password_hash"], password):
+            note_failure()
+            return bad("Wrong password", 400)
     clear_failures()
+    session.clear()
     session.permanent = True
     session["rep_id"] = rep["id"]
+    if rep["is_admin"]:
+        session["rep_pw"] = rep["pw_fp"]
     return jsonify(me_payload())
+
+
+@app.post("/api/me/password")
+def change_my_password():
+    rep = current_rep()
+    if not rep or not rep["is_admin"]:
+        return bad("Only admins have a password", 403)
+    new_password = str((request.get_json(silent=True) or {}).get("new_password") or "")
+    if len(new_password) < 8:
+        return bad("Use at least 8 characters")
+    db = get_db()
+    password_hash = generate_password_hash(new_password, method="pbkdf2:sha256")
+    db.execute("UPDATE reps SET password_hash = ? WHERE id = ?", (password_hash, rep["id"]))
+    db.commit()
+    session["rep_pw"] = password_fingerprint(password_hash)  # keep this browser signed in
+    return jsonify({"ok": True})
 
 
 @app.post("/api/logout")
@@ -783,6 +858,12 @@ def clean_rep_fields(db, data, rep_id=None):
         out["phone"] = str(data["phone"] or "").strip()[:300]
     if "active" in data:
         out["active"] = 1 if data["active"] else 0
+    if "is_admin" in data:
+        out["is_admin"] = 1 if data["is_admin"] else 0
+    if data.get("password"):
+        if len(str(data["password"])) < 8:
+            return None, "Passwords need at least 8 characters"
+        out["password_hash"] = generate_password_hash(str(data["password"]), method="pbkdf2:sha256")
     return out, None
 
 
@@ -796,12 +877,14 @@ def create_rep():
     values, err = clean_rep_fields(db, {"active": 1, "email": "", **data})
     if err:
         return bad(err)
+    if values.get("is_admin") and not values.get("password_hash"):
+        return bad("Set a password for an admin")
     values["created_at"] = now()
     rep_id = db.insert("reps", values)
     log(db, "rep", f"Added rep {values['name']}")
     bump_version(db)
     db.commit()
-    return jsonify(dict(db.execute("SELECT * FROM reps WHERE id = ?", (rep_id,)).fetchone())), 201
+    return jsonify(rep_public(db, rep_id)), 201
 
 
 @app.patch("/api/reps/<int:rep_id>")
@@ -814,6 +897,11 @@ def update_rep(rep_id):
     values, err = clean_rep_fields(db, request.get_json(silent=True) or {}, rep_id)
     if err:
         return bad(err)
+    if values.get("is_admin", existing["is_admin"]) and not values.get("password_hash", existing["password_hash"]):
+        return bad("Set a password for an admin")
+    me_rep = current_rep()
+    if me_rep and me_rep["id"] == rep_id and (values.get("is_admin") == 0 or values.get("active") == 0):
+        return bad("You can't remove your own admin access", 400)
     if values:
         assignments = ", ".join(f"{col} = ?" for col in values)
         db.execute(f"UPDATE reps SET {assignments} WHERE id = ?", [*values.values(), rep_id])
@@ -823,7 +911,7 @@ def update_rep(rep_id):
         log(db, "rep", f"Updated rep {values.get('name', existing['name'])}")
         bump_version(db)
         db.commit()
-    return jsonify(dict(db.execute("SELECT * FROM reps WHERE id = ?", (rep_id,)).fetchone()))
+    return jsonify(rep_public(db, rep_id))
 
 
 @app.delete("/api/reps/<int:rep_id>")
@@ -882,13 +970,19 @@ def import_json():
     ts = now()
     db.execute("DELETE FROM notes")
     if isinstance(data.get("reps"), list):
+        passwords = {r["email"].strip().lower(): r["password_hash"]
+                     for r in db.execute("SELECT email, password_hash FROM reps") if r["password_hash"]}
         db.execute("DELETE FROM reps")
         for rep in data["reps"]:
             name = str(rep.get("name") or "").strip()[:100] if isinstance(rep, dict) else ""
             if name:
-                db.insert("reps", {"name": name, "email": str(rep.get("email") or "")[:300],
+                email = str(rep.get("email") or "")[:300]
+                password_hash = passwords.get(email.strip().lower(), "")
+                db.insert("reps", {"name": name, "email": email,
                                    "phone": str(rep.get("phone") or "")[:300],
                                    "active": 1 if rep.get("active", 1) else 0,
+                                   "is_admin": 1 if rep.get("is_admin") and password_hash else 0,
+                                   "password_hash": password_hash,
                                    "created_at": str(rep.get("created_at") or ts)})
     db.execute("DELETE FROM edges")
     db.execute("DELETE FROM nodes")
@@ -996,7 +1090,25 @@ def import_csv():
 app.secret_key = os.environ.get("SECRET_KEY") or init_db()
 
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["set-admin-password"]:
+    if sys.argv[1:2] == ["add-admin"]:
+        # Usage: DATABASE_URL=... python app.py add-admin 'Full Name' email@company.com 'password'
+        if len(sys.argv) != 5 or "@" not in sys.argv[3] or len(sys.argv[4]) < 8:
+            sys.exit("Usage: python app.py add-admin '<name>' <email> '<password, 8+ characters>'")
+        name, email, password = sys.argv[2].strip(), sys.argv[3].strip(), sys.argv[4]
+        with app.app_context():
+            db = get_db()
+            password_hash = generate_password_hash(password, method="pbkdf2:sha256")
+            row = db.execute("SELECT id FROM reps WHERE LOWER(email) = LOWER(?)", (email,)).fetchone()
+            if row:
+                db.execute("UPDATE reps SET name = ?, active = 1, is_admin = 1, password_hash = ? WHERE id = ?",
+                           (name, password_hash, row["id"]))
+            else:
+                db.insert("reps", {"name": name, "email": email, "active": 1, "is_admin": 1,
+                                   "password_hash": password_hash, "created_at": now()})
+            bump_version(db)
+            db.commit()
+        print(f"{name} <{email}> is an admin.")
+    elif sys.argv[1:2] == ["set-admin-password"]:
         # Usage: DATABASE_URL=... python app.py set-admin-password 'new password'
         if len(sys.argv) != 3 or len(sys.argv[2]) < 8:
             sys.exit("Usage: python app.py set-admin-password '<at least 8 characters>'")
