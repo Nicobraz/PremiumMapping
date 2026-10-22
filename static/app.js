@@ -243,10 +243,7 @@ const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 darkQuery.addEventListener?.('change', () => cy.style(graphStyle()));
 
 function nodeElement(n) {
-  const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
-  const label = n.type === 'person'
-    ? (n.title ? `${n.name}\n${n.title}` : n.name)
-    : (tags.length ? `${n.name}\n${tags.join(' · ')}` : n.name);
+  const label = n.type === 'person' && n.title ? `${n.name}\n${n.title}` : n.name;
   return {
     group: 'nodes',
     data: { id: `n${n.id}`, nid: n.id, kind: n.type, label, color: nodeColor(n) },
@@ -274,6 +271,57 @@ function worksAtElement(person) {
       rel: WORKS_AT, label: 'Works at', color: NO_COMPANY, width: 1, arrow: 'none',
     },
   };
+}
+
+// ---------- company tag pills ----------
+// A node label can only have one style, so company tags are small HTML pills
+// laid over the map and kept just under each company's name.
+const tagLayer = $('#tag-layer');
+const tagPills = new Map();   // company id -> pill element
+let tagFrame = 0;
+
+function renderTagPills() {
+  const seen = new Set();
+  for (const n of state.nodes.values()) {
+    const tags = n.type === 'company' ? String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean) : [];
+    if (!tags.length) continue;
+    seen.add(n.id);
+    let el = tagPills.get(n.id);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'map-tags';
+      tagLayer.appendChild(el);
+      tagPills.set(n.id, el);
+    }
+    const html = tags.map((t) => `<span>${esc(t)}</span>`).join('');
+    if (el.innerHTML !== html) el.innerHTML = html;
+  }
+  for (const [id, el] of tagPills) {
+    if (!seen.has(id)) { el.remove(); tagPills.delete(id); }
+  }
+  scheduleTagPositions();
+}
+
+function positionTagPills() {
+  tagFrame = 0;
+  const zoom = cy.zoom();
+  const pan = cy.pan();
+  tagLayer.hidden = zoom < 0.45;  // too small to read when zoomed far out
+  if (tagLayer.hidden) return;
+  for (const [id, el] of tagPills) {
+    const node = cy.getElementById(`n${id}`);
+    if (node.empty()) { el.hidden = true; continue; }
+    const box = node.boundingBox({ includeNodes: true, includeLabels: true, includeOverlays: false });
+    el.hidden = false;
+    el.style.left = `${node.position('x') * zoom + pan.x}px`;
+    el.style.top = `${box.y2 * zoom + pan.y + 3 * zoom}px`;
+    el.style.transform = `translateX(-50%) scale(${zoom})`;
+    el.style.opacity = node.hasClass('dim') || node.hasClass('faded') ? '0.15' : '1';
+  }
+}
+
+function scheduleTagPositions() {
+  if (!tagFrame) tagFrame = requestAnimationFrame(positionTagPills);
 }
 
 function buildElements() {
@@ -310,6 +358,7 @@ function render() {
     }
   });
   placeUnpositioned();
+  renderTagPills();
   applyFilters();
   applyFocus();
   applySearch();
@@ -392,6 +441,8 @@ async function savePositions(positions) {
 
 const pendingPositions = new Map();
 let positionTimer = null;
+cy.on('render', scheduleTagPositions);
+
 cy.on('dragfree', 'node', (evt) => {
   const el = evt.target;
   const p = el.position();

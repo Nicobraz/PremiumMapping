@@ -1,6 +1,9 @@
 /* Brand tokens: Premium Surface Solutions navy and red. */
 :root {
   --brand-red: #e73235;
+  --map-tag-bg: #fdeaea;
+  --map-tag-ink: #c3262a;
+  --map-tag-border: #f6c4c5;
   --accent: #144579;
   --accent-ink: #ffffff;
   --accent-soft: #e7eef7;
@@ -38,6 +41,9 @@
     --cy-label: #e5e7eb;
     --cy-label-bg: #12161b;
     --cy-works-at: #3d4552;
+    --map-tag-bg: #3a1618;
+    --map-tag-ink: #ff9a9c;
+    --map-tag-border: #5c2427;
     color-scheme: dark;
   }
 }
@@ -58,6 +64,9 @@
   --cy-label: #e5e7eb;
   --cy-label-bg: #12161b;
   --cy-works-at: #3d4552;
+  --map-tag-bg: #3a1618;
+  --map-tag-ink: #ff9a9c;
+  --map-tag-border: #5c2427;
   color-scheme: dark;
 }
 
@@ -494,4 +503,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .hero .tags { padding: 4px 0 0; }
 @media (max-width: 720px) {
   .filter-menu { position: fixed; top: 120px; left: 16px; right: 16px; width: auto; }
+}
+
+/* ---------- company tags on the map ---------- */
+.tag-layer { position: absolute; inset: 0; z-index: 2; overflow: hidden; pointer-events: none; }
+.map-tags {
+  position: absolute; display: flex; flex-wrap: wrap; justify-content: center; gap: 3px;
+  width: max-content; max-width: 170px; transform-origin: top center;
+}
+.map-tags span {
+  padding: 1px 6px; border: 1px solid var(--map-tag-border); border-radius: 999px;
+  background: var(--map-tag-bg); color: var(--map-tag-ink);
+  font-size: 10px; font-weight: 650; line-height: 14px; white-space: nowrap;
 }
