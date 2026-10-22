@@ -1,9 +1,14 @@
 # PSS Connect
 
 A shared relationship map for the sales team. Companies and people are dots,
-and the lines between them show who knows whom. There are no logins: anyone
-with the link can view and edit, and changes show up for everyone within a
-few seconds.
+and the lines between them show who knows whom. Reps sign in with their work
+email, and changes show up for everyone within a few seconds.
+
+## Signing in
+
+- **Reps** sign in with their work email, with no password. The email has to be on the admin's rep list. A browser stays signed in for 30 days; click your name (top right) to sign out.
+- **Admin** uses **Admin login** on the sign-in screen (or ⚙ once inside) with the admin password. The first time, the admin signs in this way and adds the reps.
+- Deactivating a rep signs them out immediately.
 
 ## Using it
 
@@ -13,13 +18,12 @@ few seconds.
 - **+ Add connection** on a card connects people without touching the map, and coworkers are listed first. The "Also at…" chips connect coworkers who aren't linked yet in one click.
 - **Directory** lists every company (with headcount) and every person. Filter it, then click to open a card.
 - **Connect** (top bar): the map way, where you click one dot and then another.
-- **⚙ Admin**: log in with the admin password to add, edit, deactivate or remove reps. Reps then appear as dropdowns for **You** (who's making changes) and **Owner rep**.
+- **⚙ Admin**: add, edit, deactivate or remove reps (name and the work email they sign in with), and change the admin password.
 - **Lead ownership**: a lead a rep adds is assigned to that rep automatically. Reps can edit any lead's details, notes and connections, but **only the admin can change who a lead is assigned to**. Restoring a backup is also admin-only.
 - **Double-click** a person to show only their network within 2 steps. This answers "who can get us in front of this decision maker?"
 - **Drag** dots to arrange the map. Positions are saved for everyone. ✣ auto-arranges everything.
 - **Legend chips** show or hide relationship types. The **rep / tag** dropdowns highlight one rep's or one tag's records.
 - **Activity** shows who changed what. **Data** imports a contacts CSV, downloads or restores a backup, and saves the map as a PNG.
-- Type your name in **You** so your changes are attributed to you.
 
 ## Run locally
 
@@ -44,12 +48,6 @@ The app creates its tables on first start. Free-plan notes: the site sleeps afte
 15 minutes with no visitors, and the first visit after that takes about a minute to wake up.
 Neon also sleeps when idle, and that's fine because the data stays put.
 
-### Optional passcode
-
-Since anyone with the URL can edit, you can set an `EDIT_KEY` environment variable
-in Render. Viewing stays open, but the first edit from each browser asks for
-that passcode, and the browser remembers it.
-
 ## Backups
 
 Download a backup regularly from **Data → Download backup**, or fetch
@@ -62,7 +60,6 @@ Download a backup regularly from **Data → Download backup**, or fetch
 | `PORT`     | `8000`                   | Port when running `python3 app.py`      |
 | `DATABASE_URL` | *(unset)*            | Postgres connection string; if unset, SQLite is used |
 | `DB_PATH`  | `./data/pss_connect.db`  | SQLite file location                    |
-| `EDIT_KEY` | *(unset)*                | Shared passcode required for edits      |
 | `ADMIN_PASSWORD` | *(unset)*          | Password for the ⚙ admin panel; admin is off until set |
 
 Brand colors are CSS variables at the top of `static/styles.css`. Change `--accent` to the PSS color.

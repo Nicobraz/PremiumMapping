@@ -3,8 +3,8 @@
 PSS Connect web server.
 Serves the relationship-map app and a small JSON API backed by Postgres
 (when DATABASE_URL is set, e.g. a free Neon database) or a local SQLite file.
-There are no logins: anyone with the link can edit, and every change is
-recorded in the activity feed. Set EDIT_KEY to require a shared passcode.
+Reps sign in with their email (as listed by the admin); the admin signs in
+with a password. Every change is recorded in the activity feed.
 """
 
 import csv
@@ -20,7 +20,6 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from urllib.parse import unquote
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -32,7 +31,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 # On Render the local disk is wiped on every restart, so SQLite there means data loss.
 TEMPORARY_STORAGE = bool(os.environ.get("RENDER")) and not USE_POSTGRES
-EDIT_KEY = os.environ.get("EDIT_KEY", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 NODE_TYPES = ("company", "person")
@@ -235,6 +233,36 @@ def forget_version():
     with _version_lock:
         _known["generation"] += 1
         _known["version"] = None
+        _auth_cache.clear()
+
+
+# Sign-in is checked on every request, including the 5-second polls, so the rep
+# list and admin credential are cached in memory until the next write.
+_auth_cache = {}
+
+
+def auth_info():
+    with _version_lock:
+        cached, generation = _auth_cache.get("info"), _known["generation"]
+    if cached:
+        return cached
+    db = get_db()
+    info = {
+        "reps": {r["id"]: dict(r) for r in db.execute("SELECT id, name, email, active FROM reps")},
+        "admin_fp": admin_fingerprint(db),
+    }
+    with _version_lock:
+        if _known["generation"] == generation:
+            _auth_cache["info"] = info
+    return info
+
+
+def current_rep():
+    rep_id = session.get("rep_id")
+    if not isinstance(rep_id, int):
+        return None
+    rep = auth_info()["reps"].get(rep_id)
+    return rep if rep and rep["active"] else None  # deactivated reps are signed out
 
 
 def now():
@@ -242,14 +270,16 @@ def now():
 
 
 def actor():
-    name = unquote(request.headers.get("X-Actor", "")).strip()[:60]
-    return name or "Someone"
+    rep = current_rep()
+    if rep:
+        return rep["name"]
+    return "Admin" if is_admin() else "Someone"
 
 
 def own_name():
-    """Owner for leads a rep adds themselves: whoever they picked as "You"."""
-    name = actor()
-    return "" if name == "Someone" else name
+    """Owner for leads a rep adds themselves: the signed-in rep."""
+    rep = current_rep()
+    return rep["name"] if rep else ""
 
 
 def current_version(db):
@@ -384,7 +414,7 @@ def is_admin():
     token = session.get("admin")
     if not isinstance(token, str):
         return False
-    fingerprint = admin_fingerprint(get_db())
+    fingerprint = auth_info()["admin_fp"]
     return bool(fingerprint) and hmac.compare_digest(token, fingerprint)
 
 
@@ -397,17 +427,16 @@ def admin_only(view):
     return wrapper
 
 
+OPEN_API = {"/api/me", "/api/login", "/api/logout", "/api/admin/me", "/api/admin/login", "/api/admin/logout"}
+
+
 @app.before_request
-def require_edit_key():
-    if not EDIT_KEY or not request.path.startswith("/api/"):
+def require_sign_in():
+    if not request.path.startswith("/api/") or request.path in OPEN_API:
         return None
-    if request.path.startswith("/api/admin/") or is_admin():
+    if current_rep() or is_admin():
         return None
-    if request.method in ("GET", "HEAD", "OPTIONS"):
-        return None
-    if not hmac.compare_digest(request.headers.get("X-Edit-Key", ""), EDIT_KEY):
-        return bad("Edit key required", 401)
-    return None
+    return jsonify({"error": "Please sign in", "signed_out": True}), 401
 
 
 # ---------- pages ----------
@@ -627,6 +656,66 @@ def client_ip():
     return (request.access_route or [request.remote_addr or "?"])[0]
 
 
+def too_many_failures():
+    with _failed_lock:
+        failures, since = _failed_logins.get(client_ip(), (0, 0.0))
+        return time.time() - since <= LOCKOUT_SECS and failures >= MAX_FAILURES
+
+
+def note_failure():
+    time.sleep(0.5)
+    with _failed_lock:
+        ip = client_ip()
+        failures, since = _failed_logins.get(ip, (0, 0.0))
+        if time.time() - since > LOCKOUT_SECS:
+            failures, since = 0, 0.0
+        _failed_logins[ip] = (failures + 1, since or time.time())
+
+
+def clear_failures():
+    with _failed_lock:
+        _failed_logins.pop(client_ip(), None)
+
+
+def me_payload():
+    rep = current_rep()
+    return {
+        "rep": {"id": rep["id"], "name": rep["name"], "email": rep["email"]} if rep else None,
+        "admin": is_admin(),
+        "admin_configured": bool(auth_info()["admin_fp"]),
+        "env_managed": bool(ADMIN_PASSWORD),
+    }
+
+
+@app.get("/api/me")
+def me():
+    return jsonify(me_payload())
+
+
+@app.post("/api/login")
+def login():
+    if too_many_failures():
+        return bad("Too many attempts. Try again in 10 minutes.", 429)
+    email = str((request.get_json(silent=True) or {}).get("email") or "").strip().lower()
+    if "@" not in email:
+        return bad("Enter your work email")
+    rep = next((r for r in auth_info()["reps"].values()
+                if r["active"] and r["email"].strip().lower() == email), None)
+    if not rep:
+        note_failure()
+        return bad("That email isn't on the team list. Ask your admin to add you.", 400)
+    clear_failures()
+    session.permanent = True
+    session["rep_id"] = rep["id"]
+    return jsonify(me_payload())
+
+
+@app.post("/api/logout")
+def logout():
+    session.clear()
+    return jsonify(me_payload())
+
+
 @app.get("/api/admin/me")
 def admin_me():
     return jsonify({"configured": bool(admin_fingerprint(get_db())), "admin": is_admin(),
@@ -638,21 +727,13 @@ def admin_login():
     db = get_db()
     if not admin_fingerprint(db):
         return bad("No admin password is set yet.", 503)
-    ip = client_ip()
-    with _failed_lock:
-        failures, since = _failed_logins.get(ip, (0, 0.0))
-        if time.time() - since > LOCKOUT_SECS:
-            failures, since = 0, 0.0
-        if failures >= MAX_FAILURES:
-            return bad("Too many wrong attempts. Try again in 10 minutes.", 429)
+    if too_many_failures():
+        return bad("Too many wrong attempts. Try again in 10 minutes.", 429)
     password = str((request.get_json(silent=True) or {}).get("password") or "")
     if not check_admin_password(db, password):
-        time.sleep(0.5)
-        with _failed_lock:
-            _failed_logins[ip] = (failures + 1, since or time.time())
+        note_failure()
         return bad("Wrong password", 400)
-    with _failed_lock:
-        _failed_logins.pop(ip, None)
+    clear_failures()
     session.permanent = True
     session["admin"] = admin_fingerprint(db)
     return jsonify({"admin": True})
@@ -689,9 +770,17 @@ def clean_rep_fields(db, data, rep_id=None):
         if clash:
             return None, f"There's already a rep named {name}"
         out["name"] = name
-    for field in ("email", "phone"):
-        if field in data:
-            out[field] = str(data[field] or "").strip()[:300]
+    if "email" in data:
+        email = str(data["email"] or "").strip()[:300]
+        if "@" not in email:
+            return None, "A work email is required: it's how they sign in"
+        clash = db.execute("SELECT name FROM reps WHERE LOWER(email) = LOWER(?) AND id != ?",
+                           (email, rep_id or 0)).fetchone()
+        if clash:
+            return None, f"{clash['name']} already uses that email"
+        out["email"] = email
+    if "phone" in data:
+        out["phone"] = str(data["phone"] or "").strip()[:300]
     if "active" in data:
         out["active"] = 1 if data["active"] else 0
     return out, None
@@ -704,7 +793,7 @@ def create_rep():
     if not str(data.get("name") or "").strip():
         return bad("Name is required")
     db = get_db()
-    values, err = clean_rep_fields(db, {"active": 1, **data})
+    values, err = clean_rep_fields(db, {"active": 1, "email": "", **data})
     if err:
         return bad(err)
     values["created_at"] = now()

@@ -18,6 +18,3 @@ services:
       # Password for the ⚙ admin panel (manage reps).
       - key: ADMIN_PASSWORD
         sync: false
-      # Uncomment to require a shared passcode before anyone can edit.
-      # - key: EDIT_KEY
-      #   sync: false

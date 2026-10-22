@@ -32,6 +32,9 @@ const state = {
   picker: null,         // { nodeId, otherId } while the inline "add connection" form is open
   reps: [],
   isAdmin: false,
+  me: null,             // the signed-in rep, from /api/me
+  signedOut: false,
+  adminConfigured: false,
   editRepId: null,
   dirTab: 'companies',
   dirQuery: '',
@@ -79,54 +82,82 @@ function nodeColor(n) {
 
 // ---------- identity ----------
 
-// Once an admin has added reps, "You" is a dropdown; before that it's free text.
-const meInput = $('#me');
-const meSelect = $('#me-select');
-meInput.value = storeGet('pss.me');
-meInput.addEventListener('change', () => storeSet('pss.me', meInput.value.trim()));
-meSelect.addEventListener('change', () => {
-  storeSet('pss.me', meSelect.value);
-  meSelect.classList.remove('attention');
-});
-
+// Who's signed in comes from the server session (reps sign in by email,
+// the admin by password); every change is credited to that person.
 const activeReps = () => state.reps.filter((r) => r.active);
 
 function myName() {
-  return activeReps().length ? meSelect.value : meInput.value.trim();
+  return state.me ? state.me.name : '';
 }
 
-function renderMe() {
-  const reps = activeReps();
-  meSelect.hidden = !reps.length;
-  meInput.hidden = !!reps.length;
-  if (!reps.length) return;
-  const current = storeGet('pss.me');
-  meSelect.innerHTML = '<option value="">Who are you?</option>'
-    + reps.map((r) => `<option value="${esc(r.name)}" ${r.name === current ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
+function renderMeChip() {
+  const chip = $('#me-chip');
+  const name = state.me ? state.me.name : state.isAdmin ? 'Admin' : '';
+  chip.hidden = !name;
+  chip.innerHTML = `<span class="avatar avatar-xs" style="--hue:var(--accent)">${esc(initials(name))}</span><span class="me-name">${esc(name)}</span>`;
+  chip.title = state.me ? `Signed in as ${state.me.email}. Click to sign out.` : 'Signed in as admin. Click to sign out.';
 }
 
-function ensureName() {
-  if (myName()) return true;
-  if (activeReps().length) {
-    meSelect.classList.add('attention');
-    meSelect.focus();
-    toast('Pick your name at the top so the team knows who made changes');
-    return true;
-  }
-  const name = prompt('What\'s your name? It shows in the activity log so the team knows who changed what.');
-  if (name && name.trim()) {
-    meInput.value = name.trim().slice(0, 60);
-    storeSet('pss.me', meInput.value);
-  }
-  return true;
+function showSignIn(on) {
+  state.signedOut = on;
+  $('#signin').hidden = !on;
+  if (on) setTimeout(() => $('#signin-email').focus(), 0);
 }
+
+async function loadMe() {
+  let me;
+  try {
+    me = await (await fetch('/api/me', { cache: 'no-store' })).json();
+  } catch {
+    setLive(false);
+    setTimeout(loadMe, POLL_MS);
+    return;
+  }
+  state.me = me.rep;
+  state.adminConfigured = me.admin_configured;
+  state.adminEnvManaged = me.env_managed;
+  setAdmin(me.admin);
+  renderMeChip();
+  if (!me.rep && !me.admin) {
+    showSignIn(true);
+    return;
+  }
+  showSignIn(false);
+  sync();
+}
+
+$('#signin-form').addEventListener('submit', async (evt) => {
+  evt.preventDefault();
+  const err = $('#signin-error');
+  err.hidden = true;
+  try {
+    await api('POST', '/api/login', { email: $('#signin-email').value });
+    await loadMe();
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  }
+});
+
+$('#signin-admin').addEventListener('click', () => {
+  if (!state.adminConfigured) {
+    $('#signin-error').textContent = 'Admin isn’t set up yet.';
+    $('#signin-error').hidden = false;
+    return;
+  }
+  openAdminLogin();
+});
+
+$('#me-chip').addEventListener('click', async () => {
+  if (!confirm('Sign out of PSS Connect?')) return;
+  await fetch('/api/logout', { method: 'POST' });
+  location.reload();
+});
 
 // ---------- API ----------
 
 async function api(method, path, body) {
-  const headers = { 'X-Actor': encodeURIComponent(myName()) };
-  const key = storeGet('pss.editKey');
-  if (key) headers['X-Edit-Key'] = key;
+  const headers = {};
   let payload;
   if (body instanceof FormData) {
     payload = body;
@@ -135,15 +166,11 @@ async function api(method, path, body) {
     payload = JSON.stringify(body);
   }
   const res = await fetch(path, { method, headers, body: payload });
-  if (res.status === 401) {
-    const entered = prompt('This map is protected. Enter the team edit key:');
-    if (entered && entered.trim()) {
-      storeSet('pss.editKey', entered.trim());
-      return api(method, path, body);
-    }
-    throw new Error('Edit key required to make changes');
-  }
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && data.signed_out) {
+    showSignIn(true);
+    throw new Error('Please sign in');
+  }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
@@ -387,6 +414,7 @@ function sync() {
 async function doSync() {
   try {
     const res = await fetch(`/api/graph?since=${state.version}`, { cache: 'no-store' });
+    if (res.status === 401) { showSignIn(true); return; }
     if (!res.ok) throw new Error(res.statusText);
     const data = await res.json();
     setLive(true);
@@ -401,7 +429,6 @@ async function doSync() {
     }
     state.reps = data.reps || [];
     $('#storage-warning').hidden = !data.temporary_storage;
-    renderMe();
     state.noteText = new Map([...state.notes].map(([id, list]) =>
       [id, list.map((note) => note.body).join('\n').toLowerCase()]));
     render();
@@ -421,8 +448,8 @@ function setLive(online) {
   $('#live-text').textContent = online ? 'Live · shared with your team' : 'Offline · retrying…';
 }
 
-setInterval(() => { if (!document.hidden) sync(); }, POLL_MS);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+setInterval(() => { if (!document.hidden && !state.signedOut) sync(); }, POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.signedOut) sync(); });
 
 // ---------- filters, legend, stats ----------
 
@@ -985,7 +1012,6 @@ function openEditPanel(id) {
 
 function openNewNodePanel(type, companyId) {
   stopConnect();
-  ensureName();
   const blank = { type, name: '', title: '', company_id: companyId ?? null, email: '', phone: '',
     location: '', tags: '', owner_rep: activeReps().some((r) => r.name === myName()) ? myName() : '', notes: '' };
   const company = companyId != null ? state.nodes.get(companyId) : null;
@@ -1032,7 +1058,6 @@ function openEdgePanel(id) {
 }
 
 function openNewEdgePanel(sourceId, targetId) {
-  ensureName();
   const draft = { rel_type: 'knows', strength: 2, notes: '' };
   showPanel({ kind: 'new-edge', sourceId, targetId },
     panelHead('Connection', '', 'New connection')
@@ -1215,7 +1240,6 @@ panel.addEventListener('submit', async (evt) => {
       if (isNew) panel.querySelector('[data-form="rep-new"] input[name="name"]')?.focus();
     } else if (form.dataset.form === 'note') {
       if (!data.body.trim()) { toast('Write something first'); return; }
-      ensureName();
       await api('POST', `/api/nodes/${p.id}/notes`, { body: data.body });
       state.panelDirty = false;
       await sync();
@@ -1223,7 +1247,6 @@ panel.addEventListener('submit', async (evt) => {
       toast('Note added');
     } else if (form.dataset.form === 'quick-edge') {
       if (!data.target_id) { toast('Choose who to connect to'); return; }
-      ensureName();
       await api('POST', '/api/edges', {
         source_id: p.id, target_id: Number(data.target_id), rel_type: data.rel_type,
         strength: Number(data.strength || 2), notes: data.notes,
@@ -1304,7 +1327,7 @@ function repRowHtml(r) {
     return `<li><form class="rep-form" data-form="rep-edit" data-rep="${r.id}">
       <input name="name" value="${esc(r.name)}" required maxlength="100" placeholder="Name" aria-label="Name">
       <div class="row2">
-        <input name="email" type="email" value="${esc(r.email)}" maxlength="300" placeholder="Email" aria-label="Email">
+        <input name="email" type="email" required value="${esc(r.email)}" maxlength="300" placeholder="Work email (to sign in)" aria-label="Work email">
         <input name="phone" type="tel" value="${esc(r.phone)}" maxlength="300" placeholder="Phone" aria-label="Phone">
       </div>
       <div class="row-btns">
@@ -1314,7 +1337,7 @@ function repRowHtml(r) {
     </form></li>`;
   }
   const owned = [...state.nodes.values()].filter((n) => n.owner_rep === r.name).length;
-  const detail = [r.email, r.phone, plural(owned, 'record', 'records')].filter(Boolean).join(' · ');
+  const detail = [r.email || 'No email: can’t sign in', r.phone, plural(owned, 'record', 'records')].filter(Boolean).join(' · ');
   return `<li class="${r.active ? '' : 'inactive'}">
     <span class="avatar avatar-sm" style="--hue:${r.active ? 'var(--accent)' : 'var(--muted)'}">${esc(initials(r.name))}</span>
     <span class="who"><b>${esc(r.name)}</b>${r.active ? '' : ' <span class="pill">Inactive</span>'}<span>${esc(detail)}</span></span>
@@ -1331,11 +1354,11 @@ function openAdminPanel() {
   showPanel({ kind: 'admin' }, `${panelHead('Admin', 'pill-company', 'Settings')}
     <div class="section">
       <h3>Reps <span>${activeReps().length} active</span></h3>
-      <p class="muted">Reps appear in the “You” and “Owner rep” dropdowns. If someone leaves, deactivate them so their name stays on their records.</p>
+      <p class="muted">Reps sign in with the email listed here. If someone leaves, deactivate them: they're signed out and their name stays on their records.</p>
       <form class="rep-form" data-form="rep-new">
         <input name="name" required maxlength="100" placeholder="Rep name" aria-label="Rep name">
         <div class="row2">
-          <input name="email" type="email" maxlength="300" placeholder="Email (optional)" aria-label="Email">
+          <input name="email" type="email" required maxlength="300" placeholder="Work email (to sign in)" aria-label="Work email">
           <input name="phone" type="tel" maxlength="300" placeholder="Phone (optional)" aria-label="Phone">
         </div>
         <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">+ Add rep</button></div>
@@ -1369,8 +1392,8 @@ async function handleRepAction(act, id) {
   try {
     if (act === 'logout') {
       await api('POST', '/api/admin/logout');
-      setAdmin(false);
       closePanel();
+      await loadMe();
       toast('Logged out of admin');
       return;
     }
@@ -1394,24 +1417,17 @@ async function handleRepAction(act, id) {
   }
 }
 
-$('#btn-admin').addEventListener('click', async () => {
-  if (state.panel?.kind === 'admin') { closePanel(); return; }
-  try {
-    const me = await (await fetch('/api/admin/me', { cache: 'no-store' })).json();
-    state.adminEnvManaged = me.env_managed;
-    setAdmin(me.admin);
-    if (me.admin) {
-      openAdminPanel();
-    } else if (!me.configured) {
-      toast('Admin isn’t set up yet. Ask whoever runs PSS Connect to set the admin password.', true);
-    } else {
-      $('#admin-error').hidden = true;
-      $('#admin-password').value = '';
-      adminDialog.showModal();
-    }
-  } catch {
-    toast('Can’t reach the server', true);
-  }
+function openAdminLogin() {
+  $('#admin-error').hidden = true;
+  $('#admin-password').value = '';
+  adminDialog.showModal();
+}
+
+$('#btn-admin').addEventListener('click', () => {
+  if (state.panel?.kind === 'admin') closePanel();
+  else if (state.isAdmin) openAdminPanel();
+  else if (!state.adminConfigured) toast('Admin isn’t set up yet.', true);
+  else openAdminLogin();
 });
 
 adminDialog.addEventListener('click', (evt) => {
@@ -1423,8 +1439,8 @@ $('#admin-login').addEventListener('submit', async (evt) => {
   try {
     await api('POST', '/api/admin/login', { password: $('#admin-password').value });
     adminDialog.close();
+    await loadMe();
     openAdminPanel();
-    setAdmin(true);
     toast('Logged in as admin');
   } catch (err) {
     $('#admin-error').textContent = err.message;
@@ -1436,14 +1452,6 @@ function setAdmin(on) {
   if (state.isAdmin === !!on) return;
   state.isAdmin = !!on;
   if (state.panel?.kind === 'node-edit' && !state.panelDirty) openEditPanel(state.panel.id);
-}
-
-async function refreshAdminStatus() {
-  try {
-    const me = await (await fetch('/api/admin/me', { cache: 'no-store' })).json();
-    state.adminEnvManaged = me.env_managed;
-    setAdmin(me.admin);
-  } catch { /* offline; sync shows the status */ }
 }
 
 // ---------- activity ----------
@@ -1502,7 +1510,6 @@ $('#csv-file').addEventListener('change', async (evt) => {
   const file = evt.target.files[0];
   evt.target.value = '';
   if (!file) return;
-  ensureName();
   const form = new FormData();
   form.append('file', file);
   try {
@@ -1521,7 +1528,6 @@ $('#restore-file').addEventListener('change', async (evt) => {
   let data;
   try { data = JSON.parse(await file.text()); } catch { toast('That file isn\'t valid JSON', true); return; }
   if (!confirm('Restoring replaces the ENTIRE map for everyone with this backup. Continue?')) return;
-  ensureName();
   try {
     const r = await api('POST', '/api/import.json', data);
     dataDialog.close();
@@ -1568,7 +1574,6 @@ document.addEventListener('keydown', (evt) => {
 // ---------- start ----------
 
 buildLegend();
-sync();
-refreshAdminStatus();
+loadMe();
 
 })();

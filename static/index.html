@@ -31,11 +31,7 @@
     <button id="btn-directory" class="btn btn-ghost" title="Look up companies and people">Directory</button>
     <button id="btn-activity" class="btn btn-ghost" title="Recent changes">Activity</button>
     <button id="btn-data" class="btn btn-ghost" title="Import, export, backup">Data</button>
-    <label class="me">
-      <span>You</span>
-      <input id="me" type="text" placeholder="Your name" maxlength="60" autocomplete="name">
-      <select id="me-select" aria-label="Who are you?" hidden></select>
-    </label>
+    <button id="me-chip" class="me-chip" hidden></button>
     <button id="btn-admin" class="icon-btn" title="Admin settings" aria-label="Admin settings">⚙</button>
   </div>
 </header>
@@ -141,6 +137,18 @@
     </section>
   </form>
 </dialog>
+
+<div id="signin" class="signin" hidden>
+  <form id="signin-form" class="signin-card">
+    <img class="signin-logo" src="/static/logo.svg" alt="Premium Surface Solutions">
+    <h1>PSS <em>Connect</em></h1>
+    <p>Sign in with your work email.</p>
+    <input id="signin-email" type="email" autocomplete="email" required placeholder="you@company.com" aria-label="Work email">
+    <p id="signin-error" class="error-text" role="alert" hidden></p>
+    <button type="submit" class="btn btn-primary">Sign in</button>
+    <button type="button" id="signin-admin" class="link-btn">Admin login</button>
+  </form>
+</div>
 
 <datalist id="owner-list"></datalist>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
