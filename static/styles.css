@@ -559,3 +559,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--surface); font-size: 11.5px; color: var(--text);
 }
 .tag-add input:focus { width: 150px; outline: none; border-style: solid; border-color: var(--accent); }
+
+/* ---------- Wingmate ---------- */
+.wm-result, .wm-preview { margin: 8px 0; font-size: 13px; }
+.wm-preview { padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); color: var(--text); }
+.wm-cron { margin-top: 10px; font-size: 12.5px; }
+.wm-cron summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.wm-cron input {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--surface-2); font-size: 12px; color: var(--text);
+}
+.spinner {
+  display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px;
+  border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

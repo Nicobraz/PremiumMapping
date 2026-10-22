@@ -28,6 +28,19 @@ email, and changes show up for everyone within a few seconds.
 - **Legend chips** show or hide relationship types. **Filter** (top bar) narrows the map and Directory by **city** (from Location), **tag** or **rep**; a company's tag or city also keeps its people in view. Company tags show under the company name on the map.
 - **Activity** shows who changed what. **Data** imports a contacts CSV, downloads or restores a backup, and saves the map as a PNG.
 
+## Wingmate sync
+
+Wingmate leads flow in automatically as companies, with their contacts as people and lead comments as notes. The sync is one-way: nothing is sent back to Wingmate.
+
+- **Setup (admin):** ⚙ → **Wingmate**. Paste the Pipeline API token (Wingmate article *Retrieving your Pipeline API Access Token*, which needs the API Access & Integrations add-on) and the campaign/pipeline ID. Then click **Connect**, **Preview** to see what would change, and **Sync now**. After that it runs every 15 minutes while the site is awake.
+- **Mapping:**
+  - lead → company (name, city/state from the address; address and description go in About)
+  - contact → person at that company (email, phone, title, notes)
+  - lead comments → notes, imported once each
+  - lead owner → Owner rep, matched to a rep by email or name; otherwise **unassigned**
+- **What's kept:** a lead matching an existing company or person is linked, not duplicated. PSS tags, notes, connections and positions are never touched. An owner, once set, is never overwritten. A field edited in PSS stays until it changes in Wingmate. Nothing is deleted when a lead is deleted in Wingmate.
+- **Syncing while asleep:** the free server sleeps after 15 idle minutes. To keep syncing around the clock, add the link under *Sync even when nobody has the site open* to a free scheduler such as cron-job.org, every 15 minutes.
+
 ## Run locally
 
 ```bash

@@ -11,6 +11,7 @@ import csv
 import hashlib
 import hmac
 import io
+import json
 import math
 import os
 import re
@@ -24,6 +25,9 @@ from functools import wraps
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+import wingmate
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -37,7 +41,8 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 NODE_TYPES = ("company", "person")
 REL_TYPES = ("knows", "reports_to", "referred", "partner", "vendor", "competitor", "other")
 NODE_TEXT_FIELDS = ("name", "title", "email", "phone", "location", "tags", "owner_rep", "notes")
-NODE_COLUMNS = ("id", "type", "company_id", "x", "y", "created_at", "updated_at", "updated_by") + NODE_TEXT_FIELDS
+NODE_COLUMNS = ("id", "type", "company_id", "x", "y", "created_at", "updated_at", "updated_by",
+                "wingmate_id", "wingmate_seen", "wingmate_sync") + NODE_TEXT_FIELDS
 EDGE_COLUMNS = ("id", "source_id", "target_id", "rel_type", "strength", "notes",
                 "created_at", "updated_at", "updated_by")
 
@@ -111,6 +116,8 @@ CREATE INDEX IF NOT EXISTS idx_notes_node ON notes(node_id);
 """
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+# Render terminates HTTPS in front of the app; trust its forwarded scheme and host.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")),  # Render serves over HTTPS
@@ -186,6 +193,12 @@ MIGRATIONS = [  # (table, column, definition, backfill SQL run once when the col
     ("reps", "is_admin", "INTEGER NOT NULL DEFAULT 0", None),
     ("reps", "password_hash", "TEXT NOT NULL DEFAULT ''", None),
     ("edges", "created_by", "TEXT NOT NULL DEFAULT ''", "UPDATE edges SET created_by = updated_by"),
+    # Links to Wingmate records ("lead:123" / "contact:456") and the last lead activity seen.
+    ("nodes", "wingmate_id", "TEXT NOT NULL DEFAULT ''", None),
+    ("nodes", "wingmate_seen", "TEXT NOT NULL DEFAULT ''", None),
+    ("notes", "external_id", "TEXT NOT NULL DEFAULT ''", None),
+    # The Wingmate values last synced, so PSS edits stick until Wingmate changes that field.
+    ("nodes", "wingmate_sync", "TEXT NOT NULL DEFAULT ''", None),
 ]
 
 
@@ -206,6 +219,7 @@ def _init_schema(db):
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             if backfill:
                 db.execute(backfill)
+    db.execute("CREATE INDEX IF NOT EXISTS idx_nodes_wingmate ON nodes(wingmate_id)")
     db.execute("INSERT INTO meta (key, value) VALUES ('version', 0) ON CONFLICT (key) DO NOTHING")
     db.execute("INSERT INTO settings (key, value) VALUES ('session_secret', ?) ON CONFLICT (key) DO NOTHING",
                (secrets.token_hex(32),))
@@ -577,7 +591,8 @@ def admin_only(view):
     return wrapper
 
 
-OPEN_API = {"/api/me", "/api/login", "/api/logout", "/api/admin/me", "/api/admin/login", "/api/admin/logout"}
+OPEN_API = {"/api/me", "/api/login", "/api/logout", "/api/admin/me", "/api/admin/login", "/api/admin/logout",
+            "/api/wingmate/cron"}  # the cron link checks its own key
 
 
 @app.before_request
@@ -1158,6 +1173,9 @@ def import_json():
         row["created_at"] = str(row["created_at"] or ts)
         row["updated_at"] = str(row["updated_at"] or ts)
         row["updated_by"] = str(row["updated_by"] or "")
+        row["wingmate_id"] = str(row["wingmate_id"] or "")
+        row["wingmate_seen"] = str(row["wingmate_seen"] or "")
+        row["wingmate_sync"] = str(row["wingmate_sync"] or "")
         db.insert("nodes", row)
     restored_edges = 0
     for e in edges:
@@ -1178,7 +1196,8 @@ def import_json():
         body = str(note.get("body") or "").strip()[:5000] if node_id in node_types else ""
         if body:
             db.insert("notes", {"node_id": node_id, "body": body, "author": str(note.get("author") or ""),
-                                "created_at": str(note.get("created_at") or ts)})
+                                "created_at": str(note.get("created_at") or ts),
+                                "external_id": str(note.get("external_id") or "")})
     if USE_POSTGRES:
         # Rows were inserted with explicit ids, so move the id sequences past them.
         for table in ("nodes", "edges"):
@@ -1258,7 +1277,163 @@ def import_csv():
     return jsonify({"people": added_people, "companies": added_companies, "skipped": skipped})
 
 
+# ---------- Wingmate sync ----------
+
+WINGMATE_INTERVAL = int(os.environ.get("WINGMATE_INTERVAL_SECS", 15 * 60))
+_wingmate_lock = threading.Lock()
+_wingmate_state = {"running": None, "preview": None}  # what's running now; the last preview's counts
+
+
+def get_setting(db, key):
+    row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else ""
+
+
+def set_setting(db, key, value):
+    db.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
+               "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
+
+
+def wingmate_client(db):
+    token, campaign_id = get_setting(db, "wingmate_token"), get_setting(db, "wingmate_campaign_id")
+    return wingmate.WingmateClient(token, campaign_id) if token and campaign_id else None
+
+
+SYNC_TOOLS = {"norm_name": lambda name, is_company=False: norm_name(name, is_company),
+              "now": lambda: now(), "bump_version": lambda db: bump_version(db)}
+
+
+def run_wingmate_sync(dry_run=False):
+    """Runs one sync with its own database connection. Returns the result dict."""
+    if not _wingmate_lock.acquire(blocking=False):
+        return {"ok": False, "error": "A Wingmate sync is already running."}
+    _wingmate_state["running"] = "preview" if dry_run else "sync"
+    try:
+        with app.app_context():
+            db = get_db()
+            client = wingmate_client(db)
+            if client is None:
+                return {"ok": False, "error": "Wingmate isn't connected yet."}
+            started = now()
+            try:
+                result = {"ok": True, "at": started, **wingmate.run_sync(db, client, SYNC_TOOLS, dry_run)}
+            except wingmate.WingmateError as e:
+                db.conn.rollback()
+                result = {"ok": False, "at": started, "error": str(e)}
+            except Exception as e:  # keep the background loop alive whatever happens
+                db.conn.rollback()
+                app.logger.exception("Wingmate sync failed")
+                result = {"ok": False, "at": started, "error": f"Sync failed: {e}"}
+            if dry_run:
+                _wingmate_state["preview"] = result
+            else:
+                set_setting(db, "wingmate_last_result", json.dumps(result))
+                db.commit()
+            return result
+    finally:
+        _wingmate_state["running"] = None
+        _wingmate_lock.release()
+
+
+def start_wingmate_sync(dry_run=False):
+    """Kicks off a sync in the background; False if one is already running."""
+    if _wingmate_lock.locked():
+        return False
+    threading.Thread(target=run_wingmate_sync, args=(dry_run,), daemon=True, name="wingmate-run").start()
+    return True
+
+
+def _wingmate_loop():
+    time.sleep(min(30, WINGMATE_INTERVAL))  # let the server finish starting
+    while True:
+        try:
+            with app.app_context():
+                connected = wingmate_client(get_db()) is not None
+            if connected:
+                run_wingmate_sync()
+        except Exception:
+            app.logger.exception("Wingmate loop")
+        time.sleep(WINGMATE_INTERVAL)
+
+
+def wingmate_status(db):
+    token = get_setting(db, "wingmate_token")
+    last = get_setting(db, "wingmate_last_result")
+    cron_key = get_setting(db, "wingmate_cron_key")
+    return {
+        "connected": bool(token and get_setting(db, "wingmate_campaign_id")),
+        "token_hint": f"…{token[-4:]}" if token else "",
+        "campaign_id": get_setting(db, "wingmate_campaign_id"),
+        "campaign_name": get_setting(db, "wingmate_campaign_name"),
+        "last": json.loads(last) if last else None,
+        "preview": _wingmate_state["preview"],
+        "running": _wingmate_state["running"],
+        "interval_minutes": WINGMATE_INTERVAL // 60,
+        "cron_url": f"{request.host_url}api/wingmate/cron?key={cron_key}" if cron_key else "",
+    }
+
+
+@app.get("/api/wingmate/status")
+@admin_only
+def get_wingmate_status():
+    return jsonify(wingmate_status(get_db()))
+
+
+@app.post("/api/wingmate/settings")
+@admin_only
+def save_wingmate_settings():
+    data = request.get_json(silent=True) or {}
+    db = get_db()
+    if data.get("disconnect"):
+        for key in ("wingmate_token", "wingmate_campaign_id", "wingmate_campaign_name"):
+            set_setting(db, key, "")
+        log(db, "wingmate", "Disconnected Wingmate")
+        db.commit()
+        return jsonify(wingmate_status(db))
+    token = str(data.get("token") or "").strip() or get_setting(db, "wingmate_token")
+    campaign_id = str(data.get("campaign_id") or "").strip()
+    if not token or not campaign_id:
+        return bad("Enter the Wingmate API token and the campaign (pipeline) ID")
+    try:
+        campaign = wingmate.WingmateClient(token, campaign_id).campaign()
+    except wingmate.WingmateError as e:
+        return bad(str(e))
+    set_setting(db, "wingmate_token", token)
+    set_setting(db, "wingmate_campaign_id", campaign_id)
+    set_setting(db, "wingmate_campaign_name", str(campaign.get("name") or ""))
+    if not get_setting(db, "wingmate_cron_key"):
+        set_setting(db, "wingmate_cron_key", secrets.token_urlsafe(24))
+    log(db, "wingmate", f"Connected Wingmate pipeline {campaign.get('name') or campaign_id}")
+    db.commit()
+    return jsonify(wingmate_status(db))
+
+
+@app.post("/api/wingmate/sync")
+@admin_only
+def trigger_wingmate_sync():
+    dry_run = bool((request.get_json(silent=True) or {}).get("dry_run"))
+    if wingmate_client(get_db()) is None:
+        return bad("Connect Wingmate first")
+    if not start_wingmate_sync(dry_run):
+        return bad("A Wingmate sync is already running", 409)
+    return jsonify({"started": True}), 202
+
+
+@app.route("/api/wingmate/cron", methods=["GET", "POST"])
+def wingmate_cron():
+    """For a free scheduler (e.g. cron-job.org) to trigger syncs and keep the site awake."""
+    key = get_setting(get_db(), "wingmate_cron_key")
+    if not key or not hmac.compare_digest(request.args.get("key", ""), key):
+        return bad("Not found", 404)
+    return jsonify({"started": start_wingmate_sync()}), 202
+
+
 app.secret_key = os.environ.get("SECRET_KEY") or init_db()
+
+# One background sync loop per server process (the app runs a single worker).
+_CLI_COMMANDS = ("add-admin", "set-admin-password")
+if os.environ.get("WINGMATE_AUTOSYNC", "1") == "1" and sys.argv[1:2] not in [[c] for c in _CLI_COMMANDS]:
+    threading.Thread(target=_wingmate_loop, daemon=True, name="wingmate-loop").start()
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["add-admin"]:

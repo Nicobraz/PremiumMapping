@@ -31,6 +31,8 @@ const state = {
   panelDirty: false,
   picker: null,         // { nodeId, otherId } while the inline "add connection" form is open
   reps: [],
+  wingmate: null,       // admin-only Wingmate connection status
+  wingmateEditing: false,
   isAdmin: false,
   me: null,             // the signed-in rep, from /api/me
   signedOut: false,
@@ -385,6 +387,7 @@ function placeUnpositioned() {
   const bb = placed.boundingBox();
   const updates = [];
   let slot = 0;
+  const cols = Math.max(4, Math.ceil(Math.sqrt(missing.filter((n) => n.type === 'company').length)));
   missing.sort((a, b) => (a.type === 'company' ? 0 : 1) - (b.type === 'company' ? 0 : 1));
   for (const n of missing) {
     const company = n.company_id != null ? state.nodes.get(n.company_id) : null;
@@ -394,7 +397,7 @@ function placeUnpositioned() {
       const radius = 90 + Math.random() * 60;
       pos = { x: company.x + radius * Math.cos(angle), y: company.y + radius * Math.sin(angle) };
     } else {
-      pos = { x: bb.x2 + 180 + (slot % 4) * 180, y: bb.y1 + Math.floor(slot / 4) * 180 };
+      pos = { x: bb.x2 + 220 + (slot % cols) * 220, y: bb.y1 + Math.floor(slot / cols) * 220 };
       slot += 1;
     }
     n.x = Math.round(pos.x);
@@ -876,7 +879,7 @@ function panelHead(pill, pillClass, title) {
 
 function metaLine(item) {
   if (!item.updated_at) return '';
-  return `<div class="meta-line">Last edited ${esc(timeAgo(item.updated_at))}${item.updated_by ? ` by ${esc(item.updated_by)}` : ''}</div>`;
+  return `<div class="meta-line">Last edited ${esc(timeAgo(item.updated_at))}${item.updated_by ? ` by ${esc(item.updated_by)}` : ''}${item.wingmate_id ? ' · Synced from Wingmate' : ''}</div>`;
 }
 
 function relOptions(selected) {
@@ -1023,7 +1026,7 @@ function notesSectionHtml(n) {
     </form>
     ${notes.length ? `<ul class="notes">${notes.map((note) => `<li>
         <p>${esc(note.body)}</p>
-        <div class="note-meta">${esc(note.author || 'Someone')} · ${esc(timeAgo(note.created_at))}
+        <div class="note-meta">${esc(note.author || 'Someone')} · ${esc(timeAgo(note.created_at))}${String(note.external_id || '').startsWith('wingmate') ? ' · from Wingmate' : ''}
           ${canDeleteNote(note) ? `<button type="button" class="link-btn" data-del-note="${note.id}">Delete</button>` : ''}</div>
       </li>`).join('')}</ul>` : ''}
   </div>`;
@@ -1402,6 +1405,8 @@ panel.addEventListener('keydown', (evt) => {
 
 panel.addEventListener('click', async (evt) => {
   const p = state.panel;
+  const wmBtn = evt.target.closest('[data-wm-act]');
+  if (wmBtn) { await handleWingmateAction(wmBtn.dataset.wmAct); return; }
   const repBtn = evt.target.closest('[data-rep-act]');
   if (repBtn) { await handleRepAction(repBtn.dataset.repAct, Number(repBtn.dataset.rep)); return; }
   const tab = evt.target.closest('[data-dir-tab]');
@@ -1490,7 +1495,13 @@ panel.addEventListener('submit', async (evt) => {
   const p = state.panel;
   if (submit) submit.disabled = true;  // the tag box submits on Enter and has no button
   try {
-    if (form.dataset.form === 'add-tag') {
+    if (form.dataset.form === 'wingmate-settings') {
+      state.wingmate = await api('POST', '/api/wingmate/settings', { token: data.token, campaign_id: data.campaign_id });
+      state.wingmateEditing = false;
+      state.panelDirty = false;
+      renderWingmateSection();
+      toast(`Connected to Wingmate${state.wingmate.campaign_name ? `: ${state.wingmate.campaign_name}` : ''}`);
+    } else if (form.dataset.form === 'add-tag') {
       if (!data.tag.trim()) return;
       await api('POST', `/api/nodes/${p.id}/tags`, { add: data.tag });
       state.panelDirty = false;
@@ -1665,6 +1676,7 @@ function openAdminPanel() {
         <div class="row-btns"><button type="submit" class="btn btn-sm">Change my password</button></div>
       </form>
     </div>` : ''}
+    <div class="section" id="wingmate-section">${wingmateSectionHtml()}</div>
     <div class="section">
       <h3>Backup admin password</h3>
       <p class="muted">Used with “Admin login” on the sign-in screen, in case an admin gets locked out.</p>
@@ -1679,6 +1691,109 @@ function openAdminPanel() {
           </form>`}
     </div>
     ${state.me?.is_admin ? '' : '<div class="section"><button class="btn btn-sm" data-rep-act="logout">Log out of admin</button></div>'}`);
+  loadWingmate();
+}
+
+// ----- Wingmate -----
+
+const WM_LABELS = [
+  ['companies_added', 'company added', 'companies added'], ['companies_linked', 'company linked', 'companies linked'],
+  ['companies_updated', 'company updated', 'companies updated'], ['people_added', 'person added', 'people added'],
+  ['people_linked', 'person linked', 'people linked'], ['people_updated', 'person updated', 'people updated'],
+  ['notes_added', 'note added', 'notes added'],
+];
+
+function wingmateCounts(r, preview) {
+  const parts = WM_LABELS.filter(([key]) => r[key]).map(([key, one, many]) =>
+    `${r[key]} ${(r[key] === 1 ? one : many).replace(preview ? /added|linked|updated/ : /$^/, (w) => `to be ${w}`)}`);
+  if (preview && r.notes_to_check) parts.push(`notes checked on ${plural(r.notes_to_check, 'company', 'companies')}`);
+  return parts.length ? parts.join(' · ') : 'Everything already up to date';
+}
+
+function wingmateSectionHtml() {
+  const w = state.wingmate;
+  if (!w) return '<h3>Wingmate</h3><p class="muted">Loading…</p>';
+  const form = `<form class="rep-form" data-form="wingmate-settings">
+      <input name="token" type="password" autocomplete="off" ${w.connected ? '' : 'required'}
+        placeholder="${w.connected ? `API token (saved, ending ${esc(w.token_hint)}; leave blank to keep)` : 'Pipeline API token'}" aria-label="Wingmate API token">
+      <input name="campaign_id" required value="${esc(w.campaign_id)}" placeholder="Campaign (pipeline) ID" aria-label="Wingmate campaign ID">
+      <div class="row-btns">
+        <button type="submit" class="btn btn-sm btn-primary">${w.connected ? 'Save & test' : 'Connect'}</button>
+        ${w.connected ? '<button type="button" class="btn btn-sm btn-ghost" data-wm-act="cancel-edit">Cancel</button>' : ''}
+      </div>
+      <p class="muted">Get the token in Wingmate:
+        <a href="https://support.wingmateapp.com/hc/en-us/articles/32035342435853-Retrieving-your-Pipeline-API-Access-Token" target="_blank" rel="noopener">Retrieving your Pipeline API Access Token</a>.
+        Needs the API Access &amp; Integrations add-on.</p>
+    </form>`;
+  if (!w.connected || state.wingmateEditing) {
+    return `<h3>Wingmate</h3>
+      <p class="muted">Automatically brings Wingmate leads in as companies, with their contacts, notes and owner. One-way: nothing here is sent back to Wingmate.</p>${form}`;
+  }
+  const running = w.running;
+  const last = w.last;
+  const lastHtml = !last ? '<p class="muted">Not synced yet.</p>'
+    : last.ok ? `<p class="wm-result">Last sync ${esc(timeAgo(last.at))}: ${esc(wingmateCounts(last, false))}.</p>`
+    : `<p class="wm-result error-text">Last sync ${esc(timeAgo(last.at))} failed: ${esc(last.error)}</p>`;
+  const preview = w.preview && !running
+    ? (w.preview.ok ? `<p class="wm-preview">Preview (${plural(w.preview.leads, 'lead', 'leads')}, ${plural(w.preview.contacts, 'contact', 'contacts')} in Wingmate): ${esc(wingmateCounts(w.preview, true))}.</p>`
+      : `<p class="wm-result error-text">Preview failed: ${esc(w.preview.error)}</p>`) : '';
+  return `<h3>Wingmate <span class="pill pill-company">Connected</span></h3>
+    <p class="muted">Pipeline <b>${esc(w.campaign_name || w.campaign_id)}</b>. Syncs automatically every ${w.interval_minutes} minutes while the site is awake.</p>
+    ${running ? `<p class="wm-result"><span class="spinner"></span> ${running === 'preview' ? 'Building preview…' : 'Syncing with Wingmate…'}</p>` : lastHtml}
+    ${preview}
+    <div class="row-btns">
+      <button type="button" class="btn btn-sm" data-wm-act="preview" ${running ? 'disabled' : ''}>Preview</button>
+      <button type="button" class="btn btn-sm btn-primary" data-wm-act="sync" ${running ? 'disabled' : ''}>Sync now</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-wm-act="edit">Settings</button>
+      <button type="button" class="btn btn-sm btn-danger-ghost" data-wm-act="disconnect">Disconnect</button>
+    </div>
+    ${w.cron_url ? `<details class="wm-cron"><summary>Sync even when nobody has the site open</summary>
+      <p class="muted">The free server sleeps after 15 minutes without visitors. Add this link to a free scheduler such as cron-job.org, set to every 15 minutes, to keep syncing around the clock:</p>
+      <input readonly value="${esc(w.cron_url)}" aria-label="Wingmate sync link" onclick="this.select()"></details>` : ''}`;
+}
+
+function renderWingmateSection() {
+  const box = $('#wingmate-section');
+  if (box) box.innerHTML = wingmateSectionHtml();
+}
+
+let wingmatePoll = null;
+async function loadWingmate() {
+  try {
+    state.wingmate = await api('GET', '/api/wingmate/status');
+  } catch (err) {
+    state.wingmate = null;
+    return;
+  }
+  renderWingmateSection();
+  clearTimeout(wingmatePoll);
+  if (state.wingmate.running && state.panel?.kind === 'admin') {
+    wingmatePoll = setTimeout(async () => {
+      const wasSync = state.wingmate.running === 'sync';
+      await loadWingmate();
+      if (wasSync && !state.wingmate?.running) {
+        sync();
+        toast(state.wingmate?.last?.ok ? 'Wingmate sync finished' : 'Wingmate sync failed', !state.wingmate?.last?.ok);
+      }
+    }, 2000);
+  }
+}
+
+async function handleWingmateAction(act) {
+  try {
+    if (act === 'edit' || act === 'cancel-edit') {
+      state.wingmateEditing = act === 'edit';
+      state.panelDirty = false;
+      renderWingmateSection();
+    } else if (act === 'disconnect') {
+      if (!confirm('Disconnect Wingmate? Companies and people already synced stay on the map.')) return;
+      state.wingmate = await api('POST', '/api/wingmate/settings', { disconnect: true });
+      renderWingmateSection();
+    } else if (act === 'preview' || act === 'sync') {
+      await api('POST', '/api/wingmate/sync', { dry_run: act === 'preview' });
+      await loadWingmate();
+    }
+  } catch (err) { toast(err.message, true); }
 }
 
 function rerenderAdmin() {
