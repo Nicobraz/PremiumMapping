@@ -540,3 +540,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
     background: #3a2a12; color: #f5c98a; border-color: #6b4a1a;
   }
 }
+
+.view-only {
+  margin: 8px 16px 0; padding: 7px 10px; border-radius: 8px; background: var(--surface-2);
+  color: var(--muted); font-size: 12.5px;
+}

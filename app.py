@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS edges (
     notes       TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
-    updated_by  TEXT NOT NULL DEFAULT ''
+    updated_by  TEXT NOT NULL DEFAULT '',
+    created_by  TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS activity (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,9 +182,10 @@ def schema_statements():
 
 
 # Columns added after the first release; existing databases get them on startup.
-MIGRATIONS = [
-    ("reps", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
-    ("reps", "password_hash", "TEXT NOT NULL DEFAULT ''"),
+MIGRATIONS = [  # (table, column, definition, backfill SQL run once when the column is added)
+    ("reps", "is_admin", "INTEGER NOT NULL DEFAULT 0", None),
+    ("reps", "password_hash", "TEXT NOT NULL DEFAULT ''", None),
+    ("edges", "created_by", "TEXT NOT NULL DEFAULT ''", "UPDATE edges SET created_by = updated_by"),
 ]
 
 
@@ -199,9 +201,11 @@ def _init_schema(db):
     """Creates tables and returns the session-signing secret (generated once, kept in the DB)."""
     for stmt in schema_statements():
         db.execute(stmt)
-    for table, column, definition in MIGRATIONS:
+    for table, column, definition, backfill in MIGRATIONS:
         if column not in table_columns(db, table):
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            if backfill:
+                db.execute(backfill)
     db.execute("INSERT INTO meta (key, value) VALUES ('version', 0) ON CONFLICT (key) DO NOTHING")
     db.execute("INSERT INTO settings (key, value) VALUES ('session_secret', ?) ON CONFLICT (key) DO NOTHING",
                (secrets.token_hex(32),))
@@ -518,6 +522,20 @@ def is_admin():
     return bool(fingerprint) and hmac.compare_digest(token, fingerprint)
 
 
+# Reps may change only their own input: leads assigned to them, connections
+# they added and notes they wrote. Admins may change anything.
+def can_edit_node(node):
+    return is_admin() or bool(own_name()) and node["owner_rep"] == own_name()
+
+
+def can_edit_edge(edge):
+    return is_admin() or bool(own_name()) and edge["created_by"] == own_name()
+
+
+def not_yours(what):
+    return bad(f"You can only change {what}. Ask an admin for anything else.", 403)
+
+
 def admin_only(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
@@ -602,6 +620,8 @@ def update_node(node_id):
     existing = node_row(db, node_id)
     if not existing:
         return bad("Not found", 404)
+    if not can_edit_node(existing):
+        return not_yours("leads assigned to you")
     data = request.get_json(silent=True) or {}
     data.pop("x", None)
     data.pop("y", None)
@@ -637,6 +657,8 @@ def delete_node(node_id):
     existing = node_row(db, node_id)
     if not existing:
         return bad("Not found", 404)
+    if not can_edit_node(existing):
+        return not_yours("leads assigned to you")
     db.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
     log(db, "delete", f"Deleted {existing['type']} {existing['name']}")
     bump_version(db)
@@ -677,7 +699,7 @@ def create_edge():
         return bad(err)
     ts = now()
     values.update(source_id=source_id, target_id=target_id,
-                  created_at=ts, updated_at=ts, updated_by=actor())
+                  created_at=ts, updated_at=ts, updated_by=actor(), created_by=actor())
     edge_id = db.insert("edges", values)
     log(db, "connect", f"Connected {node_name(db, source_id)} → {node_name(db, target_id)} "
                        f"({values['rel_type'].replace('_', ' ')})")
@@ -692,6 +714,8 @@ def update_edge(edge_id):
     existing = edge_row(db, edge_id)
     if not existing:
         return bad("Not found", 404)
+    if not can_edit_edge(existing):
+        return not_yours("connections you added")
     data = request.get_json(silent=True) or {}
     values, err = clean_edge_fields(data)
     if err:
@@ -715,6 +739,8 @@ def delete_edge(edge_id):
     existing = edge_row(db, edge_id)
     if not existing:
         return bad("Not found", 404)
+    if not can_edit_edge(existing):
+        return not_yours("connections you added")
     db.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
     log(db, "disconnect", f"Removed connection {node_name(db, existing['source_id'])} – "
                           f"{node_name(db, existing['target_id'])}")
@@ -749,6 +775,8 @@ def delete_note(note_id):
     row = db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
     if not row:
         return bad("Not found", 404)
+    if not is_admin() and row["author"] != own_name():
+        return not_yours("notes you wrote")
     db.execute("DELETE FROM notes WHERE id = ?", (note_id,))
     log(db, "note", f"Deleted a note on {node_name(db, row['node_id'])}")
     bump_version(db)
@@ -972,8 +1000,11 @@ def update_rep(rep_id):
         assignments = ", ".join(f"{col} = ?" for col in values)
         db.execute(f"UPDATE reps SET {assignments} WHERE id = ?", [*values.values(), rep_id])
         if values.get("name", existing["name"]) != existing["name"]:
-            # Keep ownership pointing at the renamed rep.
-            db.execute("UPDATE nodes SET owner_rep = ? WHERE owner_rep = ?", (values["name"], existing["name"]))
+            # Keep ownership and authorship pointing at the renamed rep.
+            renamed = (values["name"], existing["name"])
+            db.execute("UPDATE nodes SET owner_rep = ? WHERE owner_rep = ?", renamed)
+            db.execute("UPDATE edges SET created_by = ? WHERE created_by = ?", renamed)
+            db.execute("UPDATE notes SET author = ? WHERE author = ?", renamed)
         log(db, "rep", f"Updated rep {values.get('name', existing['name'])}")
         bump_version(db)
         db.commit()
@@ -1076,7 +1107,8 @@ def import_json():
             continue
         values.update(source_id=source_id, target_id=target_id,
                       created_at=str(e.get("created_at") or ts), updated_at=str(e.get("updated_at") or ts),
-                      updated_by=str(e.get("updated_by") or ""))
+                      updated_by=str(e.get("updated_by") or ""),
+                      created_by=str(e.get("created_by") or e.get("updated_by") or ""))
         db.insert("edges", values)
         restored_edges += 1
     for note in data.get("notes") or []:

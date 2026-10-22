@@ -21,7 +21,7 @@ email, and changes show up for everyone within a few seconds.
 - **Directory** lists every company (with headcount) and every person. Filter it, then click to open a card.
 - **Connect** (top bar): the map way, where you click one dot and then another.
 - **⚙ Admin**: add, edit, deactivate or remove reps (name and the work email they sign in with), and change the admin password.
-- **Lead ownership**: a lead a rep adds is assigned to that rep automatically. Reps can edit any lead's details, notes and connections, but **only the admin can change who a lead is assigned to**. Restoring a backup is also admin-only.
+- **Lead ownership**: a lead a rep adds is assigned to that rep automatically, and **only an admin can reassign it**. Reps can edit and delete only their own input: leads assigned to them, connections they added and notes they wrote. Anything else shows as view-only (they can still add notes and connections to it). Admins can change everything, and restoring a backup is admin-only.
 - **Double-click** a person to show only their network within 2 steps. This answers "who can get us in front of this decision maker?"
 - **Drag** dots to arrange the map. Positions are saved for everyone. ✣ auto-arranges everything.
 - **Legend chips** show or hide relationship types. **Filter** (top bar) narrows the map and Directory by **city** (from Location), **tag** or **rep**; a company's tag or city also keeps its people in view. Company tags show under the company name on the map.

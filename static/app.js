@@ -916,14 +916,30 @@ function heroHtml(n, subtitle, extra) {
   </div>`;
 }
 
+// Mirrors the server: reps change only leads assigned to them, connections
+// they added and notes they wrote; admins can change anything.
+function canEditNode(n) {
+  return state.isAdmin || (!!myName() && n.owner_rep === myName());
+}
+
+function canEditEdge(e) {
+  return state.isAdmin || (!!myName() && e.created_by === myName());
+}
+
+function canDeleteNote(note) {
+  return state.isAdmin || (!!myName() && note.author === myName());
+}
+
 function actionsHtml(n) {
   const btns = [];
   if (n.type === 'company') btns.push('<button class="btn btn-sm btn-primary" data-act="add-person-here">+ Add person</button>');
   if (n.email) btns.push(`<a class="btn btn-sm" href="mailto:${esc(n.email)}">Email</a>`);
   if (n.phone) btns.push(`<a class="btn btn-sm" href="tel:${esc(n.phone.replace(/[^\d+]/g, ''))}">Call</a>`);
   btns.push('<button class="btn btn-sm" data-act="show-map">Show on map</button>');
-  btns.push('<button class="btn btn-sm" data-act="edit">Edit</button>');
-  return `<div class="card-actions">${btns.join('')}</div>`;
+  if (canEditNode(n)) btns.push('<button class="btn btn-sm" data-act="edit">Edit</button>');
+  const viewOnly = canEditNode(n) ? ''
+    : `<div class="view-only">View only · ${n.owner_rep ? `assigned to ${esc(n.owner_rep)}` : 'unassigned'}. You can still add notes and connections.</div>`;
+  return `<div class="card-actions">${btns.join('')}</div>${viewOnly}`;
 }
 
 function tagChipsHtml(n) {
@@ -948,7 +964,7 @@ function connListHtml(rows, empty) {
       <span class="who"><b>${esc(r.other.name)}</b>
         <span><i class="rel-dot" style="background:${r.color}"></i>${esc(capitalize(r.phrase))}${r.other.title ? ` · ${esc(r.other.title)}` : ''}</span></span>
       <span class="strength" title="${STRENGTH[r.strength]}">${'●'.repeat(r.strength)}${'○'.repeat(3 - r.strength)}</span>
-      <button class="icon-btn icon-sm" data-edge="${r.edgeId}" title="Edit connection" aria-label="Edit connection">✎</button>
+      ${canEditEdge(state.edges.get(r.edgeId)) ? `<button class="icon-btn icon-sm" data-edge="${r.edgeId}" title="Edit connection" aria-label="Edit connection">✎</button>` : ''}
     </li>`).join('')}</ul>`;
 }
 
@@ -994,7 +1010,7 @@ function notesSectionHtml(n) {
     ${notes.length ? `<ul class="notes">${notes.map((note) => `<li>
         <p>${esc(note.body)}</p>
         <div class="note-meta">${esc(note.author || 'Someone')} · ${esc(timeAgo(note.created_at))}
-          <button type="button" class="link-btn" data-del-note="${note.id}">Delete</button></div>
+          ${canDeleteNote(note) ? `<button type="button" class="link-btn" data-del-note="${note.id}">Delete</button>` : ''}</div>
       </li>`).join('')}</ul>` : ''}
   </div>`;
 }
@@ -1210,7 +1226,7 @@ function ownerFieldHtml(current, isNew) {
 
 function openEditPanel(id) {
   const n = state.nodes.get(id);
-  if (!n) return;
+  if (!n || !canEditNode(n)) return;
   showPanel({ kind: 'node-edit', id },
     panelHead(n.type === 'company' ? 'Company' : 'Person', `pill-${n.type}`, `Edit ${n.name}`)
     + nodeFormHtml(n, false) + metaLine(n));
@@ -1253,11 +1269,24 @@ function edgeEndsHtml(sourceId, targetId, relType, canSwap) {
   </div>`;
 }
 
+function edgeReadOnlyHtml(e) {
+  const facts = [['Relationship', (REL[e.rel_type] || REL.other).label], ['Strength', STRENGTH[e.strength]],
+    ['Added by', e.created_by || 'Unknown']];
+  return `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+    ${e.notes ? `<div class="section"><h3>Notes</h3><p class="about">${esc(e.notes)}</p></div>` : ''}
+    <div class="view-only">View only. Only ${esc(e.created_by || 'the person who added it')} or an admin can change this connection.</div>`;
+}
+
 function openEdgePanel(id) {
   const e = state.edges.get(id);
   if (!e) return;
   cy.elements().unselect();
   cy.getElementById(`e${id}`).select();
+  if (!canEditEdge(e)) {
+    showPanel({ kind: 'edge', id }, panelHead('Connection', '', (REL[e.rel_type] || REL.other).label)
+      + edgeEndsHtml(e.source_id, e.target_id, e.rel_type, false) + edgeReadOnlyHtml(e) + metaLine(e));
+    return;
+  }
   showPanel({ kind: 'edge', id },
     panelHead('Connection', '', (REL[e.rel_type] || REL.other).label)
     + edgeEndsHtml(e.source_id, e.target_id, e.rel_type, true)
