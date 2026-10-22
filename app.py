@@ -119,15 +119,15 @@ app.config.update(
 # ---------- database ----------
 
 if USE_POSTGRES:
+    import psycopg
     from psycopg.rows import dict_row
-    from psycopg_pool import ConnectionPool
 
-    # min_size=0 and max_idle let idle connections close, so a free Neon
-    # database can auto-suspend when nobody is using the map. Prepared
-    # statements are off so Neon's pooled (PgBouncer) URL works too.
-    _pool = ConnectionPool(DATABASE_URL, min_size=0, max_size=4, max_idle=60,
-                           kwargs={"row_factory": dict_row, "prepare_threshold": None},
-                           check=ConnectionPool.check_connection, open=True)
+
+def pg_connect():
+    """One short-lived connection per request. Neon's pooler URL does the pooling,
+    so nothing is held open and a free database can sleep when idle. Prepared
+    statements are off because that pooler (PgBouncer) doesn't keep them."""
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row, prepare_threshold=None, connect_timeout=10)
 
 
 class Database:
@@ -181,7 +181,7 @@ def _init_schema(db):
 
 def init_db():
     if USE_POSTGRES:
-        with _pool.connection() as conn:
+        with pg_connect() as conn:
             return _init_schema(Database(conn))
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -196,7 +196,7 @@ def init_db():
 def get_db():
     if "db" not in g:
         if USE_POSTGRES:
-            g.db = Database(_pool.getconn())
+            g.db = Database(pg_connect())
         else:
             conn = sqlite3.connect(DB_PATH, timeout=10)
             conn.row_factory = sqlite3.Row
@@ -210,10 +210,7 @@ def close_db(_exc):
     db = g.pop("db", None)
     if db is None:
         return
-    if USE_POSTGRES:
-        _pool.putconn(db.conn)  # rolls back anything left uncommitted
-    else:
-        db.conn.close()
+    db.conn.close()  # anything left uncommitted is rolled back
 
 
 # Open tabs poll every few seconds. Remembering the latest version in memory
