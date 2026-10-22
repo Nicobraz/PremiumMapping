@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PSS Connect</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f766e'/%3E%3Ccircle cx='10' cy='11' r='4' fill='white'/%3E%3Ccircle cx='22' cy='9' r='3' fill='white'/%3E%3Ccircle cx='19' cy='23' r='4' fill='white'/%3E%3Cpath d='M10 11 L22 9 L19 23 Z' stroke='white' stroke-width='1.5' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="20" height="20"><circle cx="10" cy="11" r="4" fill="currentColor"/><circle cx="22" cy="9" r="3" fill="currentColor"/><circle cx="19" cy="23" r="4" fill="currentColor"/><path d="M10 11 L22 9 L19 23 Z" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
+    </span>
+    <div>
+      <div class="brand-name">PSS <em>Connect</em></div>
+      <div class="brand-sub"><span id="live-dot" class="live-dot"></span><span id="live-text">Connecting…</span></div>
+    </div>
+  </div>
+
+  <div class="search">
+    <input id="search" type="search" placeholder="Search people, companies, tags…" autocomplete="off" aria-label="Search">
+    <span id="search-count" class="search-count"></span>
+  </div>
+
+  <div class="actions">
+    <button id="btn-add-company" class="btn">+ Company</button>
+    <button id="btn-add-person" class="btn">+ Person</button>
+    <button id="btn-connect" class="btn btn-primary">Connect</button>
+    <button id="btn-activity" class="btn btn-ghost" title="Recent changes">Activity</button>
+    <button id="btn-data" class="btn btn-ghost" title="Import, export, backup">Data</button>
+    <label class="me">
+      <span>You</span>
+      <input id="me" type="text" placeholder="Your name" maxlength="60" autocomplete="name">
+    </label>
+  </div>
+</header>
+
+<div class="filterbar">
+  <div id="legend" class="legend" aria-label="Relationship types (click to show or hide)"></div>
+  <div class="filters">
+    <select id="filter-owner" aria-label="Filter by owner rep"><option value="">All reps</option></select>
+    <select id="filter-tag" aria-label="Filter by tag"><option value="">All tags</option></select>
+    <button id="btn-clear-filters" class="btn btn-ghost btn-sm" hidden>Clear</button>
+    <span id="stats" class="stats"></span>
+  </div>
+</div>
+
+<main class="stage">
+  <div id="cy" aria-label="Relationship map"></div>
+
+  <div id="mode-banner" class="mode-banner" hidden>
+    <span id="mode-text"></span>
+    <button id="btn-cancel-connect" class="btn btn-sm">Cancel</button>
+  </div>
+
+  <div id="focus-chip" class="focus-chip" hidden>
+    <span id="focus-text"></span>
+    <button id="btn-clear-focus" class="icon-btn" aria-label="Clear focus">×</button>
+  </div>
+
+  <div class="zoom-controls">
+    <button id="btn-zoom-in" class="icon-btn" aria-label="Zoom in">+</button>
+    <button id="btn-zoom-out" class="icon-btn" aria-label="Zoom out">−</button>
+    <button id="btn-fit" class="icon-btn" aria-label="Fit everything" title="Fit everything">⤢</button>
+    <button id="btn-layout" class="icon-btn" aria-label="Auto-arrange" title="Auto-arrange the map">✣</button>
+  </div>
+
+  <div id="empty" class="empty" hidden>
+    <h2>Start your web</h2>
+    <p>Add the companies you sell into, then the people at them, then draw the connections between everyone.</p>
+    <div class="empty-actions">
+      <button class="btn btn-primary" data-empty="company">+ Add a company</button>
+      <button class="btn" data-empty="import">Import a CSV</button>
+    </div>
+  </div>
+
+  <aside id="panel" class="panel" hidden></aside>
+
+  <aside id="activity" class="panel" hidden>
+    <div class="panel-head">
+      <h2>Recent changes</h2>
+      <button class="icon-btn" id="btn-close-activity" aria-label="Close">×</button>
+    </div>
+    <ol id="activity-list" class="activity-list"></ol>
+  </aside>
+</main>
+
+<dialog id="data-dialog" class="dialog">
+  <div class="panel-head">
+    <h2>Data</h2>
+    <button class="icon-btn" data-close aria-label="Close">×</button>
+  </div>
+  <section>
+    <h3>Import contacts</h3>
+    <p>Columns: <code>name, title, company, email, phone, owner_rep, location, tags, notes</code>. Companies are created automatically; people already on the map are skipped.</p>
+    <div class="row-btns">
+      <label class="btn btn-primary file-btn">Choose CSV…<input id="csv-file" type="file" accept=".csv,text/csv" hidden></label>
+      <button id="btn-template" class="btn">Download template</button>
+    </div>
+  </section>
+  <section>
+    <h3>Backup</h3>
+    <p>Download everything as a file. Do this regularly, since anyone with the link can edit.</p>
+    <div class="row-btns">
+      <a class="btn" href="/api/export.json" download>Download backup</a>
+      <label class="btn btn-danger-ghost file-btn">Restore backup…<input id="restore-file" type="file" accept=".json,application/json" hidden></label>
+    </div>
+  </section>
+  <section>
+    <h3>Picture</h3>
+    <p>Save the whole map as an image for a deck or email.</p>
+    <div class="row-btns"><button id="btn-png" class="btn">Save as PNG</button></div>
+  </section>
+</dialog>
+
+<datalist id="owner-list"></datalist>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

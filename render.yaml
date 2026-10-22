@@ -1,0 +1,20 @@
+# Render blueprint: New > Blueprint, point it at this repo.
+# Free plan: the server's disk is wiped whenever it sleeps, so the data lives
+# in a free Neon Postgres database. Paste its connection string as DATABASE_URL.
+services:
+  - type: web
+    name: pss-connect
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # Keep a single worker: the app caches the map version in memory.
+    startCommand: gunicorn app:app --workers 1 --threads 4 --bind 0.0.0.0:$PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        sync: false
+      # Uncomment to require a shared passcode before anyone can edit.
+      # - key: EDIT_KEY
+      #   sync: false
