@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS activity (
     action   TEXT NOT NULL,
     summary  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    body        TEXT NOT NULL,
+    author      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
     value  INTEGER NOT NULL
@@ -77,6 +84,7 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_company ON nodes(company_id);
+CREATE INDEX IF NOT EXISTS idx_notes_node ON notes(node_id);
 """
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
@@ -224,6 +232,7 @@ def snapshot(db):
     return {
         "nodes": [dict(r) for r in db.execute("SELECT * FROM nodes ORDER BY id")],
         "edges": [dict(r) for r in db.execute("SELECT * FROM edges ORDER BY id")],
+        "notes": [dict(r) for r in db.execute("SELECT * FROM notes ORDER BY id")],
     }
 
 
@@ -480,6 +489,39 @@ def delete_edge(edge_id):
     return jsonify({"ok": True})
 
 
+# ---------- notes ----------
+
+@app.post("/api/nodes/<int:node_id>/notes")
+def add_note(node_id):
+    db = get_db()
+    node = node_row(db, node_id)
+    if not node:
+        return bad("Not found", 404)
+    data = request.get_json(silent=True) or {}
+    body = str(data.get("body") or "").strip()[:5000]
+    if not body:
+        return bad("Write something first")
+    note_id = db.insert("notes", {"node_id": node_id, "body": body, "author": actor(), "created_at": now()})
+    log(db, "note", f"Added a note to {node['name']}")
+    bump_version(db)
+    db.commit()
+    row = db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    return jsonify(dict(row)), 201
+
+
+@app.delete("/api/notes/<int:note_id>")
+def delete_note(note_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if not row:
+        return bad("Not found", 404)
+    db.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+    log(db, "note", f"Deleted a note on {node_name(db, row['node_id'])}")
+    bump_version(db)
+    db.commit()
+    return jsonify({"ok": True})
+
+
 # ---------- activity ----------
 
 @app.get("/api/activity")
@@ -518,6 +560,7 @@ def import_json():
 
     db = get_db()
     ts = now()
+    db.execute("DELETE FROM notes")
     db.execute("DELETE FROM edges")
     db.execute("DELETE FROM nodes")
     # Companies first so people's company_id references already exist.
@@ -547,6 +590,12 @@ def import_json():
                       updated_by=str(e.get("updated_by") or ""))
         db.insert("edges", values)
         restored_edges += 1
+    for note in data.get("notes") or []:
+        node_id = to_int(note.get("node_id")) if isinstance(note, dict) else None
+        body = str(note.get("body") or "").strip()[:5000] if node_id in node_types else ""
+        if body:
+            db.insert("notes", {"node_id": node_id, "body": body, "author": str(note.get("author") or ""),
+                                "created_at": str(note.get("created_at") or ts)})
     if USE_POSTGRES:
         # Rows were inserted with explicit ids, so move the id sequences past them.
         for table in ("nodes", "edges"):

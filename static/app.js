@@ -25,8 +25,13 @@ const state = {
   connecting: false,
   connectFrom: null,
   connectedAt: 0,
-  panel: null,          // { kind: 'node' | 'edge', id } or { kind: 'new-node' | 'new-edge', ... }
+  notes: new Map(),     // node id -> notes, newest first
+  noteText: new Map(),  // node id -> lowercased note text, for search
+  panel: null,          // { kind: 'node' | 'node-edit' | 'edge' | 'directory', id } or { kind: 'new-node' | 'new-edge', ... }
   panelDirty: false,
+  picker: null,         // { nodeId, otherId } while the inline "add connection" form is open
+  dirTab: 'companies',
+  dirQuery: '',
   focusId: null,
   hiddenRels: new Set(),
   ownerFilter: '',
@@ -358,6 +363,13 @@ async function doSync() {
     state.version = data.version;
     state.nodes = new Map(data.nodes.map((n) => [n.id, n]));
     state.edges = new Map(data.edges.map((e) => [e.id, e]));
+    state.notes = new Map();
+    for (const note of [...(data.notes || [])].reverse()) {
+      if (!state.notes.has(note.node_id)) state.notes.set(note.node_id, []);
+      state.notes.get(note.node_id).push(note);
+    }
+    state.noteText = new Map([...state.notes].map(([id, list]) =>
+      [id, list.map((note) => note.body).join('\n').toLowerCase()]));
     render();
     if (state.firstLoad) {
       state.firstLoad = false;
@@ -471,7 +483,8 @@ function searchMatches() {
   const q = $('#search').value.trim().toLowerCase();
   if (!q) return [];
   return [...state.nodes.values()].filter((n) =>
-    [n.name, n.title, n.email, n.tags, n.location, n.owner_rep].some((v) => String(v || '').toLowerCase().includes(q)));
+    [n.name, n.title, n.email, n.tags, n.location, n.owner_rep, n.notes].some((v) => String(v || '').toLowerCase().includes(q))
+    || (state.noteText.get(n.id) || '').includes(q));
 }
 
 function applySearch() {
@@ -610,11 +623,38 @@ cy.on('mouseout', 'edge', (evt) => evt.target.removeClass('hover'));
 
 const panel = $('#panel');
 
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+function avatar(n, size) {
+  const shape = n.type === 'company' ? 'avatar-company' : '';
+  return `<span class="avatar ${shape} ${size || ''}" style="--hue:${nodeColor(n)}" aria-hidden="true">${esc(initials(n.name))}</span>`;
+}
+
+function peopleAt(companyId) {
+  return [...state.nodes.values()].filter((p) => p.type === 'person' && p.company_id === companyId).sort(byName);
+}
+
+function companyOf(n) {
+  return n.type === 'person' && n.company_id != null ? state.nodes.get(n.company_id) || null : null;
+}
+
+function notesFor(nodeId) {
+  return state.notes.get(nodeId) || [];
+}
+
 function closePanel() {
   panel.hidden = true;
   panel.innerHTML = '';
   state.panel = null;
   state.panelDirty = false;
+  state.picker = null;
   cy.elements().unselect();
 }
 
@@ -640,28 +680,14 @@ function metaLine(item) {
   return `<div class="meta-line">Last edited ${esc(timeAgo(item.updated_at))}${item.updated_by ? ` by ${esc(item.updated_by)}` : ''}</div>`;
 }
 
-function nodeFormHtml(n, isNew) {
-  const companies = [...state.nodes.values()].filter((c) => c.type === 'company').sort(byName);
-  const field = (name, label, attrs = '') =>
-    `<label>${label}<input name="${name}" value="${esc(n[name])}" ${attrs}></label>`;
-  const person = n.type === 'person';
-  return `<form class="form" data-form="node">
-    ${field('name', 'Name', `required maxlength="300" placeholder="${person ? 'Jane Smith' : 'Acme Corp'}"`)}
-    ${person ? field('title', 'Title / role', 'maxlength="300" placeholder="VP of Operations"') : ''}
-    ${person ? `<label>Company<select name="company_id">
-        <option value="">None</option>
-        ${companies.map((c) => `<option value="${c.id}" ${c.id === n.company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
-      </select></label>` : ''}
-    ${person ? `<div class="row">${field('email', 'Email', 'type="email" maxlength="300"')}${field('phone', 'Phone', 'type="tel" maxlength="300"')}</div>` : ''}
-    ${field('location', 'Location', 'maxlength="300" placeholder="City, State"')}
-    ${field('owner_rep', 'Owner rep', 'list="owner-list" maxlength="300" placeholder="Who owns this relationship?"')}
-    ${field('tags', 'Tags <small>comma separated</small>', `maxlength="300" placeholder="${person ? 'decision maker, champion' : 'target, customer'}"`)}
-    <label>Notes<textarea name="notes" rows="4" maxlength="5000">${esc(n.notes)}</textarea></label>
-    <div class="form-actions">
-      <button type="submit" class="btn btn-primary">${isNew ? 'Add to map' : 'Save changes'}</button>
-      ${isNew ? '' : '<button type="button" class="btn btn-danger-ghost" data-act="delete-node">Delete</button>'}
-    </div>
-  </form>`;
+function relOptions(selected) {
+  return Object.entries(REL).map(([key, r]) =>
+    `<option value="${key}" ${key === selected ? 'selected' : ''}>${esc(r.label)}</option>`).join('');
+}
+
+function strengthSeg(selected) {
+  return [1, 2, 3].map((s) =>
+    `<label><input type="radio" name="strength" value="${s}" ${s === selected ? 'checked' : ''}>${STRENGTH[s]}</label>`).join('');
 }
 
 function connectionRows(nodeId) {
@@ -678,47 +704,227 @@ function connectionRows(nodeId) {
   return rows.sort((a, b) => b.strength - a.strength || byName(a.other, b.other));
 }
 
-function nodeDetailsHtml(n) {
-  const parts = [];
-  parts.push(`<div class="quick">
-    <button class="btn btn-sm btn-primary" data-act="connect-from">Connect to…</button>
-    <button class="btn btn-sm" data-act="focus">Show their network</button>
-    ${n.type === 'company' ? '<button class="btn btn-sm" data-act="add-person-here">+ Person here</button>' : ''}
-  </div>`);
+// ----- player cards -----
 
-  if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) {
-    const c = state.nodes.get(n.company_id);
-    parts.push(`<div class="section"><h3>Works at</h3><ul class="conn-list">
-      <li data-goto="${c.id}"><span class="dot" style="background:${nodeColor(c)}"></span>
-      <span class="who"><b>${esc(c.name)}</b></span></li></ul></div>`);
-  }
-
-  if (n.type === 'company') {
-    const staff = [...state.nodes.values()].filter((p) => p.company_id === n.id).sort(byName);
-    parts.push(`<div class="section"><h3>People here <span>${staff.length}</span></h3>${staff.length
-      ? `<ul class="conn-list">${staff.map((p) => `<li data-goto="${p.id}"><span class="dot" style="background:${nodeColor(p)}"></span>
-          <span class="who"><b>${esc(p.name)}</b>${p.title ? `<span>${esc(p.title)}</span>` : ''}</span></li>`).join('')}</ul>`
-      : '<p class="muted">No one added yet.</p>'}</div>`);
-  }
-
-  const rows = connectionRows(n.id);
-  parts.push(`<div class="section"><h3>Connections <span>${rows.length}</span></h3>${rows.length
-    ? `<ul class="conn-list">${rows.map((r) => `<li data-edge="${r.edgeId}" title="Edit this connection">
-        <span class="dot" style="background:${r.color}"></span>
-        <span class="who"><b>${esc(r.other.name)}</b><span>${esc(n.name)} ${esc(r.phrase)} ${esc(r.other.name)}</span></span>
-        <span class="strength" title="${STRENGTH[r.strength]}">${'●'.repeat(r.strength)}${'○'.repeat(3 - r.strength)}</span></li>`).join('')}</ul>`
-    : '<p class="muted">No connections yet. Use “Connect to…” to add one.</p>'}</div>`);
-  return parts.join('');
+function heroHtml(n, subtitle, extra) {
+  return `<div class="hero" style="--hue:${nodeColor(n)}">
+    ${avatar(n, 'avatar-lg')}
+    <div class="hero-text">
+      <span class="pill ${n.type === 'company' ? 'pill-company' : ''}">${n.type === 'company' ? 'Company' : 'Person'}</span>
+      <h2>${esc(n.name)}</h2>
+      ${subtitle ? `<div class="hero-sub">${esc(subtitle)}</div>` : ''}
+      ${extra || ''}
+    </div>
+    <button class="icon-btn" data-act="close" aria-label="Close">×</button>
+  </div>`;
 }
 
-function openNodePanel(id) {
+function actionsHtml(n) {
+  const btns = [];
+  if (n.type === 'company') btns.push('<button class="btn btn-sm btn-primary" data-act="add-person-here">+ Add person</button>');
+  if (n.email) btns.push(`<a class="btn btn-sm" href="mailto:${esc(n.email)}">Email</a>`);
+  if (n.phone) btns.push(`<a class="btn btn-sm" href="tel:${esc(n.phone.replace(/[^\d+]/g, ''))}">Call</a>`);
+  btns.push('<button class="btn btn-sm" data-act="show-map">Show on map</button>');
+  btns.push('<button class="btn btn-sm" data-act="edit">Edit</button>');
+  return `<div class="card-actions">${btns.join('')}</div>`;
+}
+
+function factsHtml(n, skip = []) {
+  const facts = [['Email', n.email], ['Phone', n.phone], ['Location', n.location], ['Owner rep', n.owner_rep]]
+    .filter(([label, value]) => value && !skip.includes(label));
+  const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  return (facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '')
+    + (tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : '');
+}
+
+function aboutHtml(n) {
+  return n.notes ? `<div class="section"><h3>About</h3><p class="about">${esc(n.notes)}</p></div>` : '';
+}
+
+function connListHtml(rows, empty) {
+  if (!rows.length) return `<p class="muted">${empty}</p>`;
+  return `<ul class="conn-list">${rows.map((r) => `<li data-goto="${r.other.id}">
+      ${avatar(r.other, 'avatar-sm')}
+      <span class="who"><b>${esc(r.other.name)}</b>
+        <span><i class="rel-dot" style="background:${r.color}"></i>${esc(capitalize(r.phrase))}${r.other.title ? ` · ${esc(r.other.title)}` : ''}</span></span>
+      <span class="strength" title="${STRENGTH[r.strength]}">${'●'.repeat(r.strength)}${'○'.repeat(3 - r.strength)}</span>
+      <button class="icon-btn icon-sm" data-edge="${r.edgeId}" title="Edit connection" aria-label="Edit connection">✎</button>
+    </li>`).join('')}</ul>`;
+}
+
+// Inline "connect to…" form: coworkers are listed first.
+function pickerHtml(n) {
+  const p = state.picker;
+  if (!p || p.nodeId !== n.id) return '<button class="btn btn-sm add-conn" data-act="open-picker">+ Add connection</button>';
+  const company = companyOf(n);
+  const others = [...state.nodes.values()].filter((o) => o.id !== n.id).sort(byName);
+  const groups = [];
+  if (company) groups.push([`At ${company.name}`, others.filter((o) => o.type === 'person' && o.company_id === company.id)]);
+  if (n.type === 'company') groups.push([`People at ${n.name}`, others.filter((o) => o.company_id === n.id)]);
+  const listed = new Set(groups.flatMap(([, list]) => list.map((o) => o.id)));
+  groups.push(['People', others.filter((o) => o.type === 'person' && !listed.has(o.id))]);
+  groups.push(['Companies', others.filter((o) => o.type === 'company')]);
+  const optionLabel = (o) => {
+    const c = companyOf(o);
+    return esc(o.name) + (c && c !== company ? ` (${esc(c.name)})` : '');
+  };
+  const options = groups.filter(([, list]) => list.length).map(([label, list]) =>
+    `<optgroup label="${esc(label)}">${list.map((o) =>
+      `<option value="${o.id}" ${o.id === p.otherId ? 'selected' : ''}>${optionLabel(o)}</option>`).join('')}</optgroup>`).join('');
+  return `<form class="picker" data-form="quick-edge">
+    <div class="picker-line"><b>${esc(n.name)}</b><select name="rel_type" aria-label="Relationship">${relOptions('knows')}</select></div>
+    <select name="target_id" aria-label="Connect to"><option value="">Choose who…</option>${options}</select>
+    <div class="seg" role="radiogroup" aria-label="Strength">${strengthSeg(2)}</div>
+    <input name="notes" maxlength="5000" placeholder="How do they know each other? (optional)">
+    <div class="form-actions">
+      <button type="submit" class="btn btn-sm btn-primary">Connect</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-act="close-picker">Cancel</button>
+    </div>
+  </form>`;
+}
+
+function notesSectionHtml(n) {
+  const notes = notesFor(n.id);
+  return `<div class="section">
+    <h3>Notes <span>${notes.length}</span></h3>
+    <form class="note-form" data-form="note">
+      <textarea name="body" rows="2" maxlength="5000" placeholder="Add a note about ${esc(n.name)}…"></textarea>
+      <button type="submit" class="btn btn-sm btn-primary">Add note</button>
+    </form>
+    ${notes.length ? `<ul class="notes">${notes.map((note) => `<li>
+        <p>${esc(note.body)}</p>
+        <div class="note-meta">${esc(note.author || 'Someone')} · ${esc(timeAgo(note.created_at))}
+          <button type="button" class="link-btn" data-del-note="${note.id}">Delete</button></div>
+      </li>`).join('')}</ul>` : ''}
+  </div>`;
+}
+
+function personCardHtml(n) {
+  const company = companyOf(n);
+  const rows = connectionRows(n.id);
+  const inside = company ? rows.filter((r) => r.other.company_id === company.id && r.other.type === 'person') : [];
+  const outside = rows.filter((r) => !inside.includes(r));
+  const linked = new Set(rows.map((r) => r.other.id));
+  const unlinked = company ? peopleAt(company.id).filter((p) => p.id !== n.id && !linked.has(p.id)) : [];
+  return heroHtml(n, n.title, company
+    ? `<button class="hero-link" data-goto="${company.id}">${esc(company.name)} →</button>`
+    : '<div class="hero-sub muted">No company</div>')
+    + actionsHtml(n)
+    + factsHtml(n)
+    + aboutHtml(n)
+    + `<div class="section">
+        <h3>Connections <span>${rows.length}</span></h3>
+        ${pickerHtml(n)}
+        ${company ? `<div class="group-label">Inside ${esc(company.name)}</div>${connListHtml(inside, 'No connections inside the company yet.')}` : ''}
+        ${unlinked.length ? `<div class="suggest"><span class="muted">Also at ${esc(company.name)}:</span>
+          ${unlinked.map((p) => `<button type="button" class="chip-btn" data-link="${p.id}" title="Connect ${esc(n.name)} and ${esc(p.name)}">+ ${esc(p.name)}</button>`).join('')}</div>` : ''}
+        <div class="group-label">${company ? `Outside ${esc(company.name)}` : 'Connected to'}</div>
+        ${connListHtml(outside, 'None yet.')}
+      </div>`
+    + notesSectionHtml(n)
+    + metaLine(n);
+}
+
+function rosterRowHtml(p, staffIds) {
+  const rows = connectionRows(p.id);
+  const internal = rows.filter((r) => staffIds.has(r.other.id));
+  const external = rows.length - internal.length;
+  const links = internal.slice(0, 2).map((r) => `${capitalize(r.phrase)} ${r.other.name}`);
+  if (internal.length > 2) links.push(`+${internal.length - 2} more`);
+  const detail = [p.title, ...links, external ? plural(external, 'outside link', 'outside links') : '']
+    .filter(Boolean).join(' · ');
+  const noteCount = notesFor(p.id).length;
+  return `<li data-goto="${p.id}">
+    ${avatar(p, 'avatar-sm')}
+    <span class="who"><b>${esc(p.name)}</b>${detail ? `<span>${esc(detail)}</span>` : ''}</span>
+    ${noteCount ? `<span class="badge" title="${plural(noteCount, 'note', 'notes')}">${noteCount} ✎</span>` : ''}
+  </li>`;
+}
+
+function companyCardHtml(n) {
+  const staff = peopleAt(n.id);
+  const staffIds = new Set(staff.map((p) => p.id));
+  let inside = 0;
+  for (const e of state.edges.values()) {
+    if (staffIds.has(e.source_id) && staffIds.has(e.target_id)) inside += 1;
+  }
+  const counts = `<div class="hero-sub">${plural(staff.length, 'person', 'people')} · ${plural(inside, 'connection', 'connections')} inside</div>`;
+  const direct = connectionRows(n.id);
+  return heroHtml(n, n.location, counts)
+    + actionsHtml(n)
+    + factsHtml(n, ['Location'])
+    + aboutHtml(n)
+    + `<div class="section">
+        <h3>People at ${esc(n.name)} <span>${staff.length}</span></h3>
+        ${staff.length
+          ? `<ul class="conn-list roster">${staff.map((p) => rosterRowHtml(p, staffIds)).join('')}</ul>`
+          : '<p class="muted">No one added yet. Use “+ Add person”.</p>'}
+      </div>
+      <div class="section">
+        <h3>Company connections <span>${direct.length}</span></h3>
+        ${pickerHtml(n)}
+        ${connListHtml(direct, 'Partners, vendors or competitors of this company.')}
+      </div>`
+    + notesSectionHtml(n)
+    + metaLine(n);
+}
+
+function openNodePanel(id, opts = {}) {
   const n = state.nodes.get(id);
   if (!n) return;
+  if (state.picker && state.picker.nodeId !== id) state.picker = null;
   cy.elements().unselect();
   cy.getElementById(`n${id}`).select();
-  showPanel({ kind: 'node', id },
-    panelHead(n.type === 'company' ? 'Company' : 'Person', `pill-${n.type}`, n.name)
-    + nodeFormHtml(n, false) + nodeDetailsHtml(n) + metaLine(n));
+  const back = opts.fromDir ? '<button class="back-link" data-act="directory">← Directory</button>' : '';
+  showPanel({ kind: 'node', id, fromDir: !!opts.fromDir },
+    back + (n.type === 'company' ? companyCardHtml(n) : personCardHtml(n)));
+}
+
+function rerenderCard() {
+  const p = state.panel;
+  if (!p || p.kind !== 'node') return;
+  const scroll = panel.scrollTop;
+  openNodePanel(p.id, { fromDir: p.fromDir });
+  panel.scrollTop = scroll;
+}
+
+// ----- edit forms -----
+
+function nodeFormHtml(n, isNew) {
+  const companies = [...state.nodes.values()].filter((c) => c.type === 'company').sort(byName);
+  const field = (name, label, attrs = '') =>
+    `<label>${label}<input name="${name}" value="${esc(n[name])}" ${attrs}></label>`;
+  const person = n.type === 'person';
+  return `<form class="form" data-form="node">
+    ${field('name', 'Name', `required maxlength="300" placeholder="${person ? 'Jane Smith' : 'Acme Corp'}"`)}
+    ${person ? field('title', 'Title / role', 'maxlength="300" placeholder="VP of Operations"') : ''}
+    ${person ? `<label>Company<select name="company_id">
+        <option value="">None</option>
+        ${companies.map((c) => `<option value="${c.id}" ${c.id === n.company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+      </select></label>` : ''}
+    ${person ? `<div class="row">${field('email', 'Email', 'type="email" maxlength="300"')}${field('phone', 'Phone', 'type="tel" maxlength="300"')}</div>` : ''}
+    ${field('location', 'Location', 'maxlength="300" placeholder="City, State"')}
+    ${field('owner_rep', 'Owner rep', 'list="owner-list" maxlength="300" placeholder="Who owns this relationship?"')}
+    ${field('tags', 'Tags <small>comma separated</small>', `maxlength="300" placeholder="${person ? 'decision maker, champion' : 'target, customer'}"`)}
+    <label>About <small>a short summary; use Notes on the card for running updates</small>
+      <textarea name="notes" rows="3" maxlength="5000" placeholder="${person ? 'Background, what they care about…' : 'What they do, size, how we sell to them…'}">${esc(n.notes)}</textarea></label>
+    <div class="form-actions">
+      <span class="row-btns">
+        <button type="submit" class="btn btn-primary">${isNew ? 'Add to map' : 'Save'}</button>
+        ${isNew ? '' : '<button type="button" class="btn btn-ghost" data-act="cancel-edit">Cancel</button>'}
+      </span>
+      ${isNew ? '' : '<button type="button" class="btn btn-danger-ghost" data-act="delete-node">Delete</button>'}
+    </div>
+  </form>`;
+}
+
+function openEditPanel(id) {
+  const n = state.nodes.get(id);
+  if (!n) return;
+  showPanel({ kind: 'node-edit', id },
+    panelHead(n.type === 'company' ? 'Company' : 'Person', `pill-${n.type}`, `Edit ${n.name}`)
+    + nodeFormHtml(n, false) + metaLine(n));
+  panel.querySelector('input[name="name"]').focus();
 }
 
 function openNewNodePanel(type, companyId) {
@@ -726,19 +932,18 @@ function openNewNodePanel(type, companyId) {
   ensureName();
   const blank = { type, name: '', title: '', company_id: companyId ?? null, email: '', phone: '',
     location: '', tags: '', owner_rep: meInput.value.trim(), notes: '' };
+  const company = companyId != null ? state.nodes.get(companyId) : null;
   showPanel({ kind: 'new-node', type },
-    panelHead(type === 'company' ? 'Company' : 'Person', `pill-${type}`, type === 'company' ? 'New company' : 'New person')
+    panelHead(type === 'company' ? 'Company' : 'Person', `pill-${type}`,
+      type === 'company' ? 'New company' : company ? `New person at ${company.name}` : 'New person')
     + nodeFormHtml(blank, true));
   panel.querySelector('input[name="name"]').focus();
 }
 
 function edgeFormHtml(e, isNew) {
-  const options = Object.entries(REL).map(([key, r]) =>
-    `<option value="${key}" ${key === e.rel_type ? 'selected' : ''}>${esc(r.label)}</option>`).join('');
-  const seg = [1, 2, 3].map((s) => `<label><input type="radio" name="strength" value="${s}" ${s === e.strength ? 'checked' : ''}>${STRENGTH[s]}</label>`).join('');
   return `<form class="form" data-form="edge">
-    <label>Relationship<select name="rel_type">${options}</select></label>
-    <div class="field"><span>Strength</span><div class="seg" role="radiogroup">${seg}</div></div>
+    <label>Relationship<select name="rel_type">${relOptions(e.rel_type)}</select></label>
+    <div class="field"><span>Strength</span><div class="seg" role="radiogroup">${strengthSeg(e.strength)}</div></div>
     <label>Notes<textarea name="notes" rows="4" maxlength="5000" placeholder="How do they know each other? Any context for the team?">${esc(e.notes)}</textarea></label>
     <div class="form-actions">
       <button type="submit" class="btn btn-primary">${isNew ? 'Add connection' : 'Save changes'}</button>
@@ -779,22 +984,70 @@ function openNewEdgePanel(sourceId, targetId) {
     + edgeFormHtml(draft, true));
 }
 
+// ----- directory -----
+
+function openDirectory(tab) {
+  if (tab) state.dirTab = tab;
+  showPanel({ kind: 'directory' }, `<div class="panel-head">
+      <h2>Directory</h2>
+      <button class="icon-btn" data-act="close" aria-label="Close">×</button>
+    </div>
+    <div class="dir-controls">
+      <div class="tabs-seg" role="tablist">
+        ${['companies', 'people'].map((t) => `<button type="button" role="tab" aria-selected="${state.dirTab === t}" class="${state.dirTab === t ? 'on' : ''}" data-dir-tab="${t}">${t === 'companies' ? 'Companies' : 'People'}</button>`).join('')}
+      </div>
+      <input id="dir-filter" type="search" placeholder="Filter by name, title, location, tag…" value="${esc(state.dirQuery)}" data-nodirty autocomplete="off">
+    </div>
+    <ul id="dir-list" class="conn-list dir-list"></ul>`);
+  renderDirectoryList();
+}
+
+function renderDirectoryList() {
+  const list = $('#dir-list');
+  if (!list) return;
+  const q = state.dirQuery.trim().toLowerCase();
+  const matches = (n) => !q || [n.name, n.title, n.location, n.tags, n.owner_rep, companyOf(n)?.name]
+    .some((v) => String(v || '').toLowerCase().includes(q));
+  if (state.dirTab === 'companies') {
+    const items = [...state.nodes.values()].filter((n) => n.type === 'company' && matches(n)).sort(byName);
+    list.innerHTML = items.length ? items.map((c) => {
+      const detail = [plural(peopleAt(c.id).length, 'person', 'people'), c.location].filter(Boolean).join(' · ');
+      return `<li data-goto="${c.id}">${avatar(c, 'avatar-sm')}<span class="who"><b>${esc(c.name)}</b><span>${esc(detail)}</span></span></li>`;
+    }).join('') : '<li class="muted">No companies match.</li>';
+  } else {
+    const items = [...state.nodes.values()].filter((n) => n.type === 'person' && matches(n)).sort(byName);
+    list.innerHTML = items.length ? items.map((p) => {
+      const detail = [p.title, companyOf(p)?.name].filter(Boolean).join(' · ');
+      return `<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${detail ? `<span>${esc(detail)}</span>` : ''}</span></li>`;
+    }).join('') : '<li class="muted">No people match.</li>';
+  }
+}
+
 // Keep the open panel in step with remote changes without clobbering edits in progress.
 function refreshPanelAfterSync() {
   const p = state.panel;
   if (!p) return;
-  if (p.kind === 'node' && !state.nodes.has(p.id)) { closePanel(); toast('That record was deleted by someone else'); return; }
+  if ((p.kind === 'node' || p.kind === 'node-edit') && !state.nodes.has(p.id)) { closePanel(); toast('That record was deleted by someone else'); return; }
   if (p.kind === 'edge' && !state.edges.has(p.id)) { closePanel(); toast('That connection was deleted by someone else'); return; }
   if (p.kind === 'new-edge' && (!state.nodes.has(p.sourceId) || !state.nodes.has(p.targetId))) { closePanel(); return; }
+  if (p.kind === 'directory') { renderDirectoryList(); return; }
   if (state.panelDirty) return;
-  const scroll = panel.scrollTop;
-  if (p.kind === 'node') openNodePanel(p.id);
-  else if (p.kind === 'edge') openEdgePanel(p.id);
-  else return;
-  panel.scrollTop = scroll;
+  if (p.kind === 'node') rerenderCard();
+  else if (p.kind === 'edge') {
+    const scroll = panel.scrollTop;
+    openEdgePanel(p.id);
+    panel.scrollTop = scroll;
+  }
 }
 
-panel.addEventListener('input', () => { state.panelDirty = true; });
+panel.addEventListener('input', (evt) => {
+  if (evt.target.id === 'dir-filter') {
+    state.dirQuery = evt.target.value;
+    renderDirectoryList();
+    return;
+  }
+  state.panelDirty = true;
+});
 
 // Changing the relationship type on a new connection updates the arrow preview.
 panel.addEventListener('change', (evt) => {
@@ -803,27 +1056,68 @@ panel.addEventListener('change', (evt) => {
   if (arrow) arrow.textContent = (REL[evt.target.value] || REL.other).directed ? '→' : '—';
 });
 
+// Cmd/Ctrl+Enter saves a note.
+panel.addEventListener('keydown', (evt) => {
+  if (evt.key === 'Enter' && (evt.metaKey || evt.ctrlKey) && evt.target.closest('[data-form="note"]')) {
+    evt.preventDefault();
+    evt.target.form.requestSubmit();
+  }
+});
+
 panel.addEventListener('click', async (evt) => {
+  const p = state.panel;
+  const tab = evt.target.closest('[data-dir-tab]');
+  if (tab) { openDirectory(tab.dataset.dirTab); return; }
+
+  const delNote = evt.target.closest('[data-del-note]');
+  if (delNote) {
+    if (!confirm('Delete this note for everyone?')) return;
+    try {
+      await api('DELETE', `/api/notes/${delNote.dataset.delNote}`);
+      state.panelDirty = false;
+      await sync();
+      rerenderCard();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
+
+  const edgeBtn = evt.target.closest('[data-edge]');
+  if (edgeBtn) { openEdgePanel(Number(edgeBtn.dataset.edge)); return; }
+
+  const link = evt.target.closest('[data-link]');
+  if (link) {
+    state.picker = { nodeId: p.id, otherId: Number(link.dataset.link) };
+    rerenderCard();
+    panel.querySelector('.picker select[name="rel_type"]')?.focus();
+    return;
+  }
+
   const goto = evt.target.closest('[data-goto]');
   if (goto) {
     const id = Number(goto.dataset.goto);
+    const fromDir = p?.kind === 'directory';
     goToNode(id);
-    openNodePanel(id);
+    openNodePanel(id, { fromDir });
     return;
   }
-  const edgeRow = evt.target.closest('[data-edge]');
-  if (edgeRow) {
-    openEdgePanel(Number(edgeRow.dataset.edge));
-    return;
-  }
+
   const act = evt.target.closest('[data-act]')?.dataset.act;
-  const p = state.panel;
   if (!act) return;
   if (act === 'close') closePanel();
-  else if (act === 'connect-from') startConnect(p.id);
-  else if (act === 'focus') focusOn(p.id);
+  else if (act === 'directory') openDirectory();
+  else if (act === 'edit') openEditPanel(p.id);
+  else if (act === 'cancel-edit') openNodePanel(p.id);
+  else if (act === 'show-map') focusOn(p.id);
   else if (act === 'add-person-here') openNewNodePanel('person', p.id);
-  else if (act === 'delete-node') await deleteNode(p.id);
+  else if (act === 'open-picker') {
+    state.picker = { nodeId: p.id, otherId: null };
+    rerenderCard();
+    panel.querySelector('.picker select[name="target_id"]')?.focus();
+  } else if (act === 'close-picker') {
+    state.picker = null;
+    state.panelDirty = false;
+    rerenderCard();
+  } else if (act === 'delete-node') await deleteNode(p.id);
   else if (act === 'delete-edge') await deleteEdge(p.id);
   else if (act === 'swap') {
     try {
@@ -840,10 +1134,30 @@ panel.addEventListener('submit', async (evt) => {
   const form = evt.target;
   const data = Object.fromEntries(new FormData(form).entries());
   const submit = form.querySelector('[type="submit"]');
+  const p = state.panel;
   submit.disabled = true;
   try {
-    const p = state.panel;
-    if (form.dataset.form === 'node') {
+    if (form.dataset.form === 'note') {
+      if (!data.body.trim()) { toast('Write something first'); return; }
+      ensureName();
+      await api('POST', `/api/nodes/${p.id}/notes`, { body: data.body });
+      state.panelDirty = false;
+      await sync();
+      rerenderCard();
+      toast('Note added');
+    } else if (form.dataset.form === 'quick-edge') {
+      if (!data.target_id) { toast('Choose who to connect to'); return; }
+      ensureName();
+      await api('POST', '/api/edges', {
+        source_id: p.id, target_id: Number(data.target_id), rel_type: data.rel_type,
+        strength: Number(data.strength || 2), notes: data.notes,
+      });
+      state.picker = null;
+      state.panelDirty = false;
+      await sync();
+      rerenderCard();
+      toast('Connected');
+    } else if (form.dataset.form === 'node') {
       if ('company_id' in data) data.company_id = data.company_id ? Number(data.company_id) : null;
       if (p.kind === 'new-node') {
         const created = await api('POST', '/api/nodes', { type: p.type, ...data });
@@ -884,7 +1198,7 @@ async function deleteNode(id) {
   const n = state.nodes.get(id);
   if (!n) return;
   const links = connectionRows(id).length;
-  const extra = links ? ` and its ${links} connection${links === 1 ? '' : 's'}` : '';
+  const extra = links ? ` and ${plural(links, 'connection', 'connections')}` : '';
   if (!confirm(`Delete ${n.name}${extra} for everyone?`)) return;
   try {
     await api('DELETE', `/api/nodes/${id}`);
@@ -996,6 +1310,9 @@ $('#btn-png').addEventListener('click', () => {
 
 $('#btn-add-company').addEventListener('click', () => openNewNodePanel('company'));
 $('#btn-add-person').addEventListener('click', () => openNewNodePanel('person'));
+$('#btn-directory').addEventListener('click', () => {
+  if (state.panel?.kind === 'directory') closePanel(); else openDirectory();
+});
 $('#btn-zoom-in').addEventListener('click', () => cy.animate({ zoom: { level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } } }, { duration: 150 }));
 $('#btn-zoom-out').addEventListener('click', () => cy.animate({ zoom: { level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } } }, { duration: 150 }));
 $('#btn-fit').addEventListener('click', () => cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 }));

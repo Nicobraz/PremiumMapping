@@ -8,8 +8,11 @@ few seconds.
 ## Using it
 
 - **+ Company / + Person**: add someone. People pick their company, which draws a dashed "works at" line.
-- **Connect**: click one person or company, then another, then choose the relationship (Knows, Reports to, Referred, Partner, Vendor to, Competitor, Other) and its strength.
-- **Click** anything to see and edit its details, notes, and connections.
+- **Click** a person to open their **player card**: contact info, tags, an About summary, connections (split into inside and outside their company), and running notes stamped with who wrote them and when.
+- **Click** a company for its card: everyone who works there, with titles and how they're connected inside the company, plus company notes.
+- **+ Add connection** on a card connects people without touching the map, and coworkers are listed first. The "Also at…" chips connect coworkers who aren't linked yet in one click.
+- **Directory** lists every company (with headcount) and every person. Filter it, then click to open a card.
+- **Connect** (top bar): the map way, where you click one dot and then another.
 - **Double-click** a person to show only their network within 2 steps. This answers "who can get us in front of this decision maker?"
 - **Drag** dots to arrange the map. Positions are saved for everyone. ✣ auto-arranges everything.
 - **Legend chips** show or hide relationship types. The **rep / tag** dropdowns highlight one rep's or one tag's records.
