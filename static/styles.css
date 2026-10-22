@@ -1,8 +1,9 @@
-/* Brand tokens: swap --accent for PSS colors. */
+/* Brand tokens: Premium Surface Solutions navy and red. */
 :root {
-  --accent: #0f766e;
+  --brand-red: #e73235;
+  --accent: #144579;
   --accent-ink: #ffffff;
-  --accent-soft: #e6f4f2;
+  --accent-soft: #e7eef7;
   --danger: #b91c1c;
   --bg: #f5f6f8;
   --surface: #ffffff;
@@ -21,9 +22,9 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --accent: #2dd4bf;
-    --accent-ink: #062b27;
-    --accent-soft: #10302c;
+    --accent: #7fb0e6;
+    --accent-ink: #0b1a2c;
+    --accent-soft: #172a40;
     --danger: #f87171;
     --bg: #0f1216;
     --surface: #171b21;
@@ -41,9 +42,9 @@
   }
 }
 :root[data-theme="dark"] {
-  --accent: #2dd4bf;
-  --accent-ink: #062b27;
-  --accent-soft: #10302c;
+  --accent: #7fb0e6;
+  --accent-ink: #0b1a2c;
+  --accent-soft: #172a40;
   --danger: #f87171;
   --bg: #0f1216;
   --surface: #171b21;
@@ -76,12 +77,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 10px; }
-.brand-mark {
-  width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
-  background: var(--accent); color: var(--accent-ink);
-}
-.brand-name { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; line-height: 1.1; }
-.brand-name em { font-style: normal; color: var(--accent); }
+.brand-mark { width: 40px; height: 26px; flex-shrink: 0; }
+.brand-name { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; line-height: 1.1; color: var(--accent); }
+.brand-name em { font-style: normal; color: var(--brand-red); }
 .brand-sub { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .live-dot.on { background: #22c55e; }
@@ -178,6 +176,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
 }
 .empty h2 { margin: 0 0 6px; font-size: 19px; }
+.empty-logo { display: block; width: min(260px, 80%); margin: 0 auto 18px; }
+.dialog-logo { display: block; width: 200px; margin: 6px 0 12px; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .empty-logo, :root:not([data-theme="light"]) .dialog-logo {
+    padding: 10px; background: #fff; border-radius: 10px; box-sizing: content-box;
+  }
+}
 .empty p { margin: 0 0 18px; color: var(--muted); }
 .empty-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 

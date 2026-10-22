@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PSS Connect</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f766e'/%3E%3Ccircle cx='10' cy='11' r='4' fill='white'/%3E%3Ccircle cx='22' cy='9' r='3' fill='white'/%3E%3Ccircle cx='19' cy='23' r='4' fill='white'/%3E%3Cpath d='M10 11 L22 9 L19 23 Z' stroke='white' stroke-width='1.5' fill='none'/%3E%3C/svg%3E">
+<link rel="icon" href="/static/emblem.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
 </head>
@@ -12,9 +12,7 @@
 
 <header class="topbar">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 32 32" width="20" height="20"><circle cx="10" cy="11" r="4" fill="currentColor"/><circle cx="22" cy="9" r="3" fill="currentColor"/><circle cx="19" cy="23" r="4" fill="currentColor"/><path d="M10 11 L22 9 L19 23 Z" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
-    </span>
+    <img class="brand-mark" src="/static/emblem.svg" alt="" width="40" height="26">
     <div>
       <div class="brand-name">PSS <em>Connect</em></div>
       <div class="brand-sub"><span id="live-dot" class="live-dot"></span><span id="live-text">Connecting…</span></div>
@@ -73,6 +71,7 @@
   </div>
 
   <div id="empty" class="empty" hidden>
+    <img class="empty-logo" src="/static/logo.svg" alt="Premium Surface Solutions">
     <h2>Start your web</h2>
     <p>Add the companies you sell into, then the people at them, then draw the connections between everyone.</p>
     <div class="empty-actions">
@@ -127,6 +126,7 @@
       <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
     </div>
     <section>
+      <img class="dialog-logo" src="/static/logo.svg" alt="Premium Surface Solutions">
       <p>Admins can add and manage reps.</p>
       <label class="stack">Password
         <input id="admin-password" type="password" autocomplete="current-password" required>
