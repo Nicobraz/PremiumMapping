@@ -441,6 +441,35 @@ def duplicate_response(duplicates, node_type):
     return jsonify({"error": f"This {what} may already be on the map.", "duplicates": duplicates}), 409
 
 
+# ---------- company tags ----------
+
+def clean_tag(tag):
+    return re.sub(r"\s+", " ", str(tag or "").replace(",", " ")).strip()[:40]
+
+
+def known_tags(db):
+    """Every tag in use, keyed by lowercase, keeping the first spelling seen."""
+    tags = {}
+    for r in db.execute("SELECT tags FROM nodes WHERE type = 'company' AND tags <> '' ORDER BY id"):
+        for t in r["tags"].split(","):
+            t = t.strip()
+            if t:
+                tags.setdefault(t.lower(), t)
+    return tags
+
+
+def join_tags(db, raw_tags, existing=None):
+    """De-duplicates tags and reuses the spelling already in use ('GYM' -> 'gym')."""
+    known = known_tags(db) if existing is None else existing
+    out, seen = [], set()
+    for raw in raw_tags:
+        tag = clean_tag(raw)
+        if tag and tag.lower() not in seen:
+            seen.add(tag.lower())
+            out.append(known.get(tag.lower(), tag))
+    return ", ".join(out)
+
+
 def clean_node_fields(db, data, node_type):
     """Whitelists and normalizes node fields. Returns (values, error)."""
     out = {}
@@ -448,6 +477,9 @@ def clean_node_fields(db, data, node_type):
         if field in data:
             limit = 5000 if field == "notes" else 300
             out[field] = str(data[field] if data[field] is not None else "").strip()[:limit]
+    if "tags" in out:
+        # Tags belong to companies only; for companies keep a tidy, de-duplicated list.
+        out["tags"] = join_tags(db, out["tags"].split(",")) if node_type == "company" else ""
     if "name" in out and not out["name"]:
         return None, "Name is required"
     for field in ("x", "y"):
@@ -747,6 +779,36 @@ def delete_edge(edge_id):
     bump_version(db)
     db.commit()
     return jsonify({"ok": True})
+
+
+@app.post("/api/nodes/<int:node_id>/tags")
+def change_tags(node_id):
+    """Anyone signed in can add or remove a company's tags, whoever the lead belongs to."""
+    db = get_db()
+    node = node_row(db, node_id)
+    if not node:
+        return bad("Not found", 404)
+    if node["type"] != "company":
+        return bad("Tags are for companies")
+    data = request.get_json(silent=True) or {}
+    add, remove = clean_tag(data.get("add")), clean_tag(data.get("remove"))
+    current = [t.strip() for t in node["tags"].split(",") if t.strip()]
+    if add:
+        tags = join_tags(db, current + [add])
+        summary = f"Tagged {node['name']} \u201c{known_tags(db).get(add.lower(), add)}\u201d"
+    elif remove:
+        removed = next((t for t in current if t.lower() == remove.lower()), remove)
+        tags = ", ".join(t for t in current if t.lower() != remove.lower())
+        summary = f"Removed tag \u201c{removed}\u201d from {node['name']}"
+    else:
+        return bad("Type a tag")
+    if tags != node["tags"]:
+        db.execute("UPDATE nodes SET tags = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                   (tags, now(), actor(), node_id))
+        log(db, "tag", summary)
+        bump_version(db)
+        db.commit()
+    return jsonify(node_row(db, node_id))
 
 
 # ---------- notes ----------
@@ -1173,6 +1235,11 @@ def import_csv():
             skipped += 1
             continue
         values = {f: row.get(f, "")[:5000 if f == "notes" else 300] for f in NODE_TEXT_FIELDS}
+        values["tags"] = ""  # tags belong to companies
+        if company_id and row.get("tags"):
+            company_tags = db.execute("SELECT tags FROM nodes WHERE id = ?", (company_id,)).fetchone()["tags"]
+            merged = join_tags(db, company_tags.split(",") + row["tags"].split(","))
+            db.execute("UPDATE nodes SET tags = ? WHERE id = ?", (merged, company_id))
         values.update(type="person", company_id=company_id, created_at=ts, updated_at=ts, updated_by=who)
         if not admin:
             values["owner_rep"] = own_name()

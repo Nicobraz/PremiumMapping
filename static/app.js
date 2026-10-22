@@ -553,12 +553,14 @@ function filterMatches() {
   const city = state.cityFilter.toLowerCase();
   const tag = state.tagFilter.toLowerCase();
   const owner = state.ownerFilter.toLowerCase();
-  const own = (n) => (!tag || splitTags(n.tags).includes(tag)) && (!city || cityOf(n).toLowerCase() === city);
+  const cityOk = (n) => cityOf(n).toLowerCase() === city;
   const matched = new Set();
   for (const n of state.nodes.values()) {
     if (owner && n.owner_rep.trim().toLowerCase() !== owner) continue;
-    const company = companyOf(n);
-    if (own(n) || (company && own(company)) || (n.type === 'company' && peopleAt(n.id).some(own))) matched.add(n.id);
+    const company = n.type === 'company' ? n : companyOf(n);
+    if (tag && !(company && splitTags(company.tags).includes(tag))) continue;  // tags live on companies
+    if (city && !(cityOk(n) || (company && cityOk(company)) || (n.type === 'company' && peopleAt(n.id).some(cityOk)))) continue;
+    matched.add(n.id);
   }
   return matched;
 }
@@ -616,13 +618,14 @@ function refreshFilterOptions() {
   for (const r of activeReps()) owners.set(r.name.toLowerCase(), { value: r.name, n: 0 });
   for (const n of state.nodes.values()) {
     if (n.owner_rep.trim()) bump(owners, n.owner_rep.trim());
-    for (const t of String(n.tags || '').split(',').map((x) => x.trim()).filter(Boolean)) bump(tags, t);
+    if (n.type === 'company') for (const t of String(n.tags || '').split(',').map((x) => x.trim()).filter(Boolean)) bump(tags, t);
     if (cityOf(n)) bump(cities, cityOf(n));
   }
   fillSelect($('#filter-city'), countedEntries(cities), 'All cities', state.cityFilter);
   fillSelect($('#filter-tag'), countedEntries(tags), 'All tags', state.tagFilter);
   fillSelect($('#filter-owner'), countedEntries(owners), 'All reps', state.ownerFilter);
   $('#owner-list').innerHTML = [...owners.values()].map((o) => `<option value="${esc(o.value)}">`).join('');
+  $('#tag-list').innerHTML = [...tags.values()].map((t) => `<option value="${esc(t.value)}">`).join('');
 }
 
 function setFilter(key, value) {
@@ -679,7 +682,7 @@ function searchMatches() {
   const q = $('#search').value.trim().toLowerCase();
   if (!q) return [];
   return [...state.nodes.values()].filter((n) =>
-    [n.name, n.title, n.email, n.tags, n.location, n.owner_rep, n.notes].some((v) => String(v || '').toLowerCase().includes(q))
+    [n.name, n.title, n.email, n.type === 'company' ? n.tags : '', n.location, n.owner_rep, n.notes].some((v) => String(v || '').toLowerCase().includes(q))
     || (state.noteText.get(n.id) || '').includes(q));
 }
 
@@ -910,7 +913,7 @@ function heroHtml(n, subtitle, extra) {
       <h2>${esc(n.name)}</h2>
       ${subtitle ? `<div class="hero-sub">${esc(subtitle)}</div>` : ''}
       ${extra || ''}
-      ${tagChipsHtml(n)}
+      ${n.type === 'company' ? tagEditorHtml(n) : ''}
     </div>
     <button class="icon-btn" data-act="close" aria-label="Close">×</button>
   </div>`;
@@ -938,11 +941,22 @@ function actionsHtml(n) {
   btns.push('<button class="btn btn-sm" data-act="show-map">Show on map</button>');
   if (canEditNode(n)) btns.push('<button class="btn btn-sm" data-act="edit">Edit</button>');
   const viewOnly = canEditNode(n) ? ''
-    : `<div class="view-only">View only · ${n.owner_rep ? `assigned to ${esc(n.owner_rep)}` : 'unassigned'}. You can still add notes and connections.</div>`;
+    : `<div class="view-only">View only · ${n.owner_rep ? `assigned to ${esc(n.owner_rep)}` : 'unassigned'}. You can still add tags, notes and connections.</div>`;
   return `<div class="card-actions">${btns.join('')}</div>${viewOnly}`;
 }
 
+// Anyone can add or remove a company's tags (not just its owner); new tags
+// join the shared list that the "+ Add tag" box suggests.
+function tagEditorHtml(n) {
+  const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  return `<div class="tags tag-editor">
+    ${tags.map((t) => `<span class="tag">${esc(t)}<button type="button" class="tag-x" data-untag="${esc(t)}" title="Remove tag" aria-label="Remove tag ${esc(t)}">×</button></span>`).join('')}
+    <form class="tag-add" data-form="add-tag"><input name="tag" list="tag-list" maxlength="40" autocomplete="off" placeholder="+ Add tag" aria-label="Add a tag"></form>
+  </div>`;
+}
+
 function tagChipsHtml(n) {
+  if (n.type !== 'company') return '';
   const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
   return tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : '';
 }
@@ -1190,7 +1204,7 @@ function nodeFormHtml(n, isNew) {
     ${person ? `<div class="row">${field('email', 'Email', 'type="email" maxlength="300"')}${field('phone', 'Phone', 'type="tel" maxlength="300"')}</div>` : ''}
     ${field('location', 'Location', 'maxlength="300" placeholder="City, State"')}
     ${ownerFieldHtml(n.owner_rep, isNew)}
-    ${field('tags', 'Tags <small>comma separated</small>', `maxlength="300" placeholder="${person ? 'decision maker, champion' : 'target, customer'}"`)}
+    ${!person && isNew ? field('tags', 'Tags <small>comma separated; add more later on the card</small>', 'maxlength="300" placeholder="target, gym"') : ''}
     <label>About <small>a short summary; use Notes on the card for running updates</small>
       <textarea name="notes" rows="3" maxlength="5000" placeholder="${person ? 'Background, what they care about…' : 'What they do, size, how we sell to them…'}">${esc(n.notes)}</textarea></label>
     <div class="form-actions">
@@ -1405,6 +1419,17 @@ panel.addEventListener('click', async (evt) => {
     return;
   }
 
+  const untag = evt.target.closest('[data-untag]');
+  if (untag) {
+    try {
+      await api('POST', `/api/nodes/${p.id}/tags`, { remove: untag.dataset.untag });
+      state.panelDirty = false;
+      await sync();
+      rerenderCard();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
+
   const edgeBtn = evt.target.closest('[data-edge]');
   if (edgeBtn) { openEdgePanel(Number(edgeBtn.dataset.edge)); return; }
 
@@ -1463,9 +1488,16 @@ panel.addEventListener('submit', async (evt) => {
   const data = Object.fromEntries(new FormData(form).entries());
   const submit = form.querySelector('[type="submit"]');
   const p = state.panel;
-  submit.disabled = true;
+  if (submit) submit.disabled = true;  // the tag box submits on Enter and has no button
   try {
-    if (form.dataset.form === 'my-password') {
+    if (form.dataset.form === 'add-tag') {
+      if (!data.tag.trim()) return;
+      await api('POST', `/api/nodes/${p.id}/tags`, { add: data.tag });
+      state.panelDirty = false;
+      await sync();
+      rerenderCard();
+      panel.querySelector('.tag-add input')?.focus();  // ready for the next tag
+    } else if (form.dataset.form === 'my-password') {
       if (data.new_password !== data.confirm) { toast('The two passwords don’t match', true); return; }
       await api('POST', '/api/me/password', { new_password: data.new_password });
       state.panelDirty = false;
@@ -1542,7 +1574,7 @@ panel.addEventListener('submit', async (evt) => {
     if (err.duplicates && form.dataset.form === 'node') showDuplicateWarning(form, err, state.panel?.kind === 'new-node');
     else toast(err.message, true);
   } finally {
-    submit.disabled = false;
+    if (submit) submit.disabled = false;
     delete form.dataset.force;
   }
 });

@@ -545,3 +545,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
   margin: 8px 16px 0; padding: 7px 10px; border-radius: 8px; background: var(--surface-2);
   color: var(--muted); font-size: 12.5px;
 }
+
+/* ---------- company tag editor ---------- */
+.tag-editor { align-items: center; }
+.tag-editor .tag { display: inline-flex; align-items: center; gap: 2px; padding-right: 3px; }
+.tag-x {
+  all: unset; cursor: pointer; width: 16px; height: 16px; display: grid; place-items: center;
+  border-radius: 50%; font-size: 12px; line-height: 1; opacity: .6;
+}
+.tag-x:hover, .tag-x:focus-visible { opacity: 1; background: rgba(0, 0, 0, .08); }
+.tag-add input {
+  width: 110px; padding: 2px 9px; border: 1px dashed var(--border); border-radius: 999px;
+  background: var(--surface); font-size: 11.5px; color: var(--text);
+}
+.tag-add input:focus { width: 150px; outline: none; border-style: solid; border-color: var(--accent); }
