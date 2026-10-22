@@ -13,7 +13,9 @@ import hmac
 import io
 import math
 import os
+import secrets
 import sqlite3
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -21,6 +23,7 @@ from functools import wraps
 from urllib.parse import unquote
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -89,6 +92,10 @@ CREATE TABLE IF NOT EXISTS reps (
     active      INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
     value  INTEGER NOT NULL
@@ -100,9 +107,6 @@ CREATE INDEX IF NOT EXISTS idx_notes_node ON notes(node_id);
 """
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
-# Changing ADMIN_PASSWORD changes the derived key, which signs every admin out.
-app.secret_key = os.environ.get("SECRET_KEY") or hashlib.sha256(
-    f"pss-connect|{ADMIN_PASSWORD}|{DATABASE_URL or DB_PATH}".encode()).hexdigest()
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")),  # Render serves over HTTPS
@@ -161,18 +165,30 @@ def schema_statements():
     return [stmt.strip() for stmt in sql.split(";") if stmt.strip()]
 
 
+def _init_schema(db):
+    """Creates tables and returns the session-signing secret (generated once, kept in the DB)."""
+    for stmt in schema_statements():
+        db.execute(stmt)
+    db.execute("INSERT INTO meta (key, value) VALUES ('version', 0) ON CONFLICT (key) DO NOTHING")
+    db.execute("INSERT INTO settings (key, value) VALUES ('session_secret', ?) ON CONFLICT (key) DO NOTHING",
+               (secrets.token_hex(32),))
+    secret = db.execute("SELECT value FROM settings WHERE key = 'session_secret'").fetchone()["value"]
+    db.commit()
+    return secret
+
+
 def init_db():
-    seed = "INSERT INTO meta (key, value) VALUES ('version', 0) ON CONFLICT (key) DO NOTHING"
     if USE_POSTGRES:
         with _pool.connection() as conn:
-            for stmt in schema_statements() + [seed]:
-                conn.execute(stmt)
-        return
+            return _init_schema(Database(conn))
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    with sqlite3.connect(DB_PATH) as db:
-        db.execute("PRAGMA journal_mode = WAL")
-        for stmt in schema_statements() + [seed]:
-            db.execute(stmt)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+        return _init_schema(Database(conn))
+    finally:
+        conn.close()
 
 
 def get_db():
@@ -332,8 +348,39 @@ def clean_edge_fields(data):
 
 # ---------- access ----------
 
+# The admin password comes from the ADMIN_PASSWORD env var if set, otherwise
+# from a hash stored in the settings table (set from the admin panel or CLI).
+def stored_admin_hash(db):
+    row = db.execute("SELECT value FROM settings WHERE key = 'admin_password_hash'").fetchone()
+    return row["value"] if row else ""
+
+
+def save_admin_password(db, password):
+    db.execute("INSERT INTO settings (key, value) VALUES ('admin_password_hash', ?) "
+               "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+               (generate_password_hash(password, method="pbkdf2:sha256"),))
+    db.commit()
+
+
+def admin_fingerprint(db):
+    """Changes whenever the password changes, which signs existing admin sessions out."""
+    credential = ADMIN_PASSWORD or stored_admin_hash(db)
+    return hashlib.sha256(f"admin|{credential}".encode()).hexdigest()[:24] if credential else ""
+
+
+def check_admin_password(db, password):
+    if ADMIN_PASSWORD:
+        return hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode())
+    stored = stored_admin_hash(db)
+    return bool(stored) and check_password_hash(stored, password)
+
+
 def is_admin():
-    return bool(ADMIN_PASSWORD) and session.get("admin") is True
+    token = session.get("admin")
+    if not isinstance(token, str):
+        return False
+    fingerprint = admin_fingerprint(get_db())
+    return bool(fingerprint) and hmac.compare_digest(token, fingerprint)
 
 
 def admin_only(view):
@@ -571,13 +618,15 @@ def client_ip():
 
 @app.get("/api/admin/me")
 def admin_me():
-    return jsonify({"configured": bool(ADMIN_PASSWORD), "admin": is_admin()})
+    return jsonify({"configured": bool(admin_fingerprint(get_db())), "admin": is_admin(),
+                    "env_managed": bool(ADMIN_PASSWORD)})
 
 
 @app.post("/api/admin/login")
 def admin_login():
-    if not ADMIN_PASSWORD:
-        return bad("No admin password is set. Add ADMIN_PASSWORD in Render → Environment.", 503)
+    db = get_db()
+    if not admin_fingerprint(db):
+        return bad("No admin password is set yet.", 503)
     ip = client_ip()
     with _failed_lock:
         failures, since = _failed_logins.get(ip, (0, 0.0))
@@ -586,7 +635,7 @@ def admin_login():
         if failures >= MAX_FAILURES:
             return bad("Too many wrong attempts. Try again in 10 minutes.", 429)
     password = str((request.get_json(silent=True) or {}).get("password") or "")
-    if not hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode()):
+    if not check_admin_password(db, password):
         time.sleep(0.5)
         with _failed_lock:
             _failed_logins[ip] = (failures + 1, since or time.time())
@@ -594,8 +643,22 @@ def admin_login():
     with _failed_lock:
         _failed_logins.pop(ip, None)
     session.permanent = True
-    session["admin"] = True
+    session["admin"] = admin_fingerprint(db)
     return jsonify({"admin": True})
+
+
+@app.post("/api/admin/password")
+@admin_only
+def change_admin_password():
+    if ADMIN_PASSWORD:
+        return bad("This password is set in Render (ADMIN_PASSWORD). Change it there.", 409)
+    new_password = str((request.get_json(silent=True) or {}).get("new_password") or "")
+    if len(new_password) < 8:
+        return bad("Use at least 8 characters")
+    db = get_db()
+    save_admin_password(db, new_password)
+    session["admin"] = admin_fingerprint(db)  # keep this browser signed in
+    return jsonify({"ok": True})
 
 
 @app.post("/api/admin/logout")
@@ -826,8 +889,16 @@ def import_csv():
     return jsonify({"people": added_people, "companies": added_companies, "skipped": skipped})
 
 
-init_db()
+app.secret_key = os.environ.get("SECRET_KEY") or init_db()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+    if sys.argv[1:2] == ["set-admin-password"]:
+        # Usage: DATABASE_URL=... python app.py set-admin-password 'new password'
+        if len(sys.argv) != 3 or len(sys.argv[2]) < 8:
+            sys.exit("Usage: python app.py set-admin-password '<at least 8 characters>'")
+        with app.app_context():
+            save_admin_password(get_db(), sys.argv[2])
+        print("Admin password saved.")
+    else:
+        port = int(os.environ.get("PORT", 8000))
+        app.run(host="0.0.0.0", port=port)

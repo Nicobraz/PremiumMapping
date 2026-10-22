@@ -1185,7 +1185,13 @@ panel.addEventListener('submit', async (evt) => {
   const p = state.panel;
   submit.disabled = true;
   try {
-    if (form.dataset.form === 'rep-new' || form.dataset.form === 'rep-edit') {
+    if (form.dataset.form === 'admin-password') {
+      if (data.new_password !== data.confirm) { toast('The two passwords don’t match', true); return; }
+      await api('POST', '/api/admin/password', { new_password: data.new_password });
+      state.panelDirty = false;
+      form.reset();
+      toast('Admin password changed');
+    } else if (form.dataset.form === 'rep-new' || form.dataset.form === 'rep-edit') {
       const isNew = form.dataset.form === 'rep-new';
       const body = { name: data.name, email: data.email, phone: data.phone };
       if (isNew) await api('POST', '/api/reps', body);
@@ -1325,6 +1331,18 @@ function openAdminPanel() {
       </form>
       ${reps.length ? `<ul class="rep-list">${reps.map(repRowHtml).join('')}</ul>` : '<p class="muted">No reps yet.</p>'}
     </div>
+    <div class="section">
+      <h3>Admin password</h3>
+      ${state.adminEnvManaged
+        ? '<p class="muted">This password is set in Render (ADMIN_PASSWORD). Change it there.</p>'
+        : `<form class="rep-form" data-form="admin-password">
+            <div class="row2">
+              <input name="new_password" type="password" minlength="8" required autocomplete="new-password" placeholder="New password" aria-label="New password">
+              <input name="confirm" type="password" minlength="8" required autocomplete="new-password" placeholder="Type it again" aria-label="Confirm new password">
+            </div>
+            <div class="row-btns"><button type="submit" class="btn btn-sm">Change password</button></div>
+          </form>`}
+    </div>
     <div class="section"><button class="btn btn-sm" data-rep-act="logout">Log out of admin</button></div>`);
 }
 
@@ -1368,10 +1386,11 @@ $('#btn-admin').addEventListener('click', async () => {
   if (state.panel?.kind === 'admin') { closePanel(); return; }
   try {
     const me = await (await fetch('/api/admin/me', { cache: 'no-store' })).json();
+    state.adminEnvManaged = me.env_managed;
     if (me.admin) {
       openAdminPanel();
     } else if (!me.configured) {
-      toast('Admin isn’t set up yet: add an ADMIN_PASSWORD setting in Render → Environment', true);
+      toast('Admin isn’t set up yet. Ask whoever runs PSS Connect to set the admin password.', true);
     } else {
       $('#admin-error').hidden = true;
       $('#admin-password').value = '';
