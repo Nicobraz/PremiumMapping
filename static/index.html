@@ -103,7 +103,7 @@
   </div>
   <section>
     <h3>Import contacts</h3>
-    <p>Columns: <code>name, title, company, email, phone, owner_rep, location, tags, notes</code>. Companies are created automatically; people already on the map are skipped.</p>
+    <p>Columns: <code>name, title, company, email, phone, owner_rep, location, tags, notes</code>. Companies are created automatically; people already on the map are skipped.<span id="csv-owner-note"> Everyone you import is assigned to you.</span></p>
     <div class="row-btns">
       <label class="btn btn-primary file-btn">Choose CSV…<input id="csv-file" type="file" accept=".csv,text/csv" hidden></label>
       <button id="btn-template" class="btn">Download template</button>
@@ -114,7 +114,7 @@
     <p>Download everything as a file. Do this regularly, since anyone with the link can edit.</p>
     <div class="row-btns">
       <a class="btn" href="/api/export.json" download>Download backup</a>
-      <label class="btn btn-danger-ghost file-btn">Restore backup…<input id="restore-file" type="file" accept=".json,application/json" hidden></label>
+      <label id="restore-label" class="btn btn-danger-ghost file-btn">Restore backup…<input id="restore-file" type="file" accept=".json,application/json" hidden></label>
     </div>
   </section>
   <section>

@@ -246,6 +246,12 @@ def actor():
     return name or "Someone"
 
 
+def own_name():
+    """Owner for leads a rep adds themselves: whoever they picked as "You"."""
+    name = actor()
+    return "" if name == "Someone" else name
+
+
 def current_version(db):
     return db.execute("SELECT value FROM meta WHERE key = 'version'").fetchone()["value"]
 
@@ -446,6 +452,8 @@ def create_node():
     values, err = clean_node_fields(db, data, node_type)
     if err:
         return bad(err)
+    if not is_admin():
+        values["owner_rep"] = own_name()  # reps can only assign new leads to themselves
     ts = now()
     values.update(type=node_type, created_at=ts, updated_at=ts, updated_by=actor())
     node_id = db.insert("nodes", values)
@@ -469,6 +477,10 @@ def update_node(node_id):
         return bad(err)
     if values.get("company_id") == node_id:
         return bad("A node can't belong to itself")
+    if "owner_rep" in values and not is_admin():
+        if values["owner_rep"] != existing["owner_rep"]:
+            return bad("Only an admin can change who a lead is assigned to.", 403)
+        del values["owner_rep"]
     if values:
         values.update(updated_at=now(), updated_by=actor())
         assignments = ", ".join(f"{col} = ?" for col in values)
@@ -765,6 +777,8 @@ def export_json():
 @app.post("/api/import.json")
 def import_json():
     """Restores a backup, replacing the whole map."""
+    if not is_admin():
+        return bad("Only an admin can restore a backup.", 403)
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not isinstance(data.get("nodes"), list) \
             or not isinstance(data.get("edges"), list):
@@ -847,7 +861,7 @@ def import_csv():
         return bad("The CSV is empty")
 
     db = get_db()
-    ts, who = now(), actor()
+    ts, who, admin = now(), actor(), is_admin()
     companies = {r["name"].strip().lower(): r["id"]
                  for r in db.execute("SELECT id, name FROM nodes WHERE type = 'company'")}
     people = {(r["name"].strip().lower(), r["company_id"])
@@ -862,7 +876,7 @@ def import_csv():
             company_id = companies.get(company.lower())
             if company_id is None:
                 company_id = companies[company.lower()] = db.insert("nodes", {
-                    "type": "company", "name": company[:300],
+                    "type": "company", "name": company[:300], "owner_rep": "" if admin else own_name(),
                     "created_at": ts, "updated_at": ts, "updated_by": who})
                 added_companies += 1
         if not name:
@@ -875,6 +889,8 @@ def import_csv():
             continue
         values = {f: row.get(f, "")[:5000 if f == "notes" else 300] for f in NODE_TEXT_FIELDS}
         values.update(type="person", company_id=company_id, created_at=ts, updated_at=ts, updated_by=who)
+        if not admin:
+            values["owner_rep"] = own_name()
         db.insert("nodes", values)
         people.add(key)
         added_people += 1

@@ -31,6 +31,7 @@ const state = {
   panelDirty: false,
   picker: null,         // { nodeId, otherId } while the inline "add connection" form is open
   reps: [],
+  isAdmin: false,
   editRepId: null,
   dirTab: 'companies',
   dirQuery: '',
@@ -938,7 +939,7 @@ function nodeFormHtml(n, isNew) {
       </select></label>` : ''}
     ${person ? `<div class="row">${field('email', 'Email', 'type="email" maxlength="300"')}${field('phone', 'Phone', 'type="tel" maxlength="300"')}</div>` : ''}
     ${field('location', 'Location', 'maxlength="300" placeholder="City, State"')}
-    ${ownerFieldHtml(n.owner_rep)}
+    ${ownerFieldHtml(n.owner_rep, isNew)}
     ${field('tags', 'Tags <small>comma separated</small>', `maxlength="300" placeholder="${person ? 'decision maker, champion' : 'target, customer'}"`)}
     <label>About <small>a short summary; use Notes on the card for running updates</small>
       <textarea name="notes" rows="3" maxlength="5000" placeholder="${person ? 'Background, what they care about…' : 'What they do, size, how we sell to them…'}">${esc(n.notes)}</textarea></label>
@@ -952,7 +953,16 @@ function nodeFormHtml(n, isNew) {
   </form>`;
 }
 
-function ownerFieldHtml(current) {
+// Reps can't reassign leads: new ones go to whoever is "You", and only an admin
+// can change the owner afterwards (the server enforces this too).
+function ownerFieldHtml(current, isNew) {
+  if (!state.isAdmin) {
+    const owner = isNew
+      ? (myName() ? `${esc(myName())} (you)` : 'You (pick your name at the top)')
+      : (current ? esc(current) : 'Unassigned');
+    return `<div class="field"><span>Owner rep</span>
+      <div class="readonly">${owner}<small>${isNew ? 'New leads are assigned to you' : 'Only an admin can reassign'}</small></div></div>`;
+  }
   const reps = activeReps().map((r) => r.name);
   if (!reps.length) {
     return `<label>Owner rep<input name="owner_rep" value="${esc(current)}" list="owner-list" maxlength="300" placeholder="Who owns this relationship?"></label>`;
@@ -1359,6 +1369,7 @@ async function handleRepAction(act, id) {
   try {
     if (act === 'logout') {
       await api('POST', '/api/admin/logout');
+      setAdmin(false);
       closePanel();
       toast('Logged out of admin');
       return;
@@ -1388,6 +1399,7 @@ $('#btn-admin').addEventListener('click', async () => {
   try {
     const me = await (await fetch('/api/admin/me', { cache: 'no-store' })).json();
     state.adminEnvManaged = me.env_managed;
+    setAdmin(me.admin);
     if (me.admin) {
       openAdminPanel();
     } else if (!me.configured) {
@@ -1412,12 +1424,27 @@ $('#admin-login').addEventListener('submit', async (evt) => {
     await api('POST', '/api/admin/login', { password: $('#admin-password').value });
     adminDialog.close();
     openAdminPanel();
+    setAdmin(true);
     toast('Logged in as admin');
   } catch (err) {
     $('#admin-error').textContent = err.message;
     $('#admin-error').hidden = false;
   }
 });
+
+function setAdmin(on) {
+  if (state.isAdmin === !!on) return;
+  state.isAdmin = !!on;
+  if (state.panel?.kind === 'node-edit' && !state.panelDirty) openEditPanel(state.panel.id);
+}
+
+async function refreshAdminStatus() {
+  try {
+    const me = await (await fetch('/api/admin/me', { cache: 'no-store' })).json();
+    state.adminEnvManaged = me.env_managed;
+    setAdmin(me.admin);
+  } catch { /* offline; sync shows the status */ }
+}
 
 // ---------- activity ----------
 
@@ -1444,7 +1471,12 @@ $('#btn-close-activity').addEventListener('click', closeActivity);
 // ---------- data dialog ----------
 
 const dataDialog = $('#data-dialog');
-$('#btn-data').addEventListener('click', () => dataDialog.showModal());
+function openDataDialog() {
+  $('#restore-label').hidden = !state.isAdmin;
+  $('#csv-owner-note').hidden = state.isAdmin;
+  dataDialog.showModal();
+}
+$('#btn-data').addEventListener('click', openDataDialog);
 dataDialog.addEventListener('click', (evt) => {
   if (evt.target === dataDialog || evt.target.closest('[data-close]')) dataDialog.close();
 });
@@ -1522,7 +1554,7 @@ $('#btn-layout').addEventListener('click', () => {
 $('#empty').addEventListener('click', (evt) => {
   const which = evt.target.closest('[data-empty]')?.dataset.empty;
   if (which === 'company') openNewNodePanel('company');
-  else if (which === 'import') dataDialog.showModal();
+  else if (which === 'import') openDataDialog();
 });
 
 document.addEventListener('keydown', (evt) => {
@@ -1537,5 +1569,6 @@ document.addEventListener('keydown', (evt) => {
 
 buildLegend();
 sync();
+refreshAdminStatus();
 
 })();
