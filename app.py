@@ -18,7 +18,7 @@ import sqlite3
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from functools import wraps
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory, session
@@ -112,8 +112,20 @@ app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")),  # Render serves over HTTPS
-    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
 )
+
+# Sign-ins last for the browser session: closing the browser (or clearing
+# cookies) means signing in again. Bumping the version signs everyone out.
+SESSION_VERSION = 2
+
+
+def start_session():
+    session.permanent = False
+    session["sv"] = SESSION_VERSION
+
+
+def session_valid():
+    return session.get("sv") == SESSION_VERSION
 
 
 # ---------- database ----------
@@ -289,7 +301,7 @@ def password_fingerprint(password_hash):
 
 def current_rep():
     rep_id = session.get("rep_id")
-    if not isinstance(rep_id, int):
+    if not isinstance(rep_id, int) or not session_valid():
         return None
     rep = auth_info()["reps"].get(rep_id)
     if not rep or not rep["active"]:
@@ -459,7 +471,7 @@ def is_admin():
     if rep and rep["is_admin"]:
         return True
     token = session.get("admin")  # the backup shared admin password
-    if not isinstance(token, str):
+    if not isinstance(token, str) or not session_valid():
         return False
     fingerprint = auth_info()["admin_fp"]
     return bool(fingerprint) and hmac.compare_digest(token, fingerprint)
@@ -762,7 +774,7 @@ def login():
             return bad("Wrong password", 400)
     clear_failures()
     session.clear()
-    session.permanent = True
+    start_session()
     session["rep_id"] = rep["id"]
     if rep["is_admin"]:
         session["rep_pw"] = rep["pw_fp"]
@@ -809,7 +821,9 @@ def admin_login():
         note_failure()
         return bad("Wrong password", 400)
     clear_failures()
-    session.permanent = True
+    if not session_valid():
+        session.clear()
+    start_session()
     session["admin"] = admin_fingerprint(db)
     return jsonify({"admin": True})
 
