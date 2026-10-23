@@ -18,6 +18,8 @@ email, and changes show up for everyone within a few seconds.
 - **Click** a company for its card: everyone who works there, with titles and how they're connected inside the company, plus company notes.
 - **+ Add connection** on a card connects people without touching the map, and coworkers are listed first. The "Also at…" chips connect coworkers who aren't linked yet in one click.
 - **Company tags**: tags are for companies only. Anyone can add or remove a company's tags right on its card, whoever owns it: click **+ Add tag** and click a suggestion (most-used first), or type a new name and click **+ Create**. Click a tag's **×** to remove it. New tags join the shared list and the Filter. Spelling is reused, so "GYM" becomes the existing "gym". In CSV imports the `tags` column tags the company.
+- **Pipeline stage** (contacts): shows on each contact's card, in company rosters and in the Directory, so every rep can see where a contact stands, even another rep's. Wingmate contacts get it from their lead's status, and a change in Wingmate updates it; other contacts' owners set it under Edit. Filter → Stage narrows the map to it.
+- **Merge…** (on a contact's card): folds a duplicate into this contact. Notes and connections move over, missing details are filled in, and the duplicate is removed; Wingmate keeps syncing into the kept contact. Reps can merge their own contacts, admins any.
 - **Duplicate guard**: adding or renaming warns as you type if the company or person is already on the map (company names ignore capitals, punctuation and Inc/LLC/Corp; people match on name within the same company, or on email). Saving a likely duplicate asks you to open the existing record or **Add anyway**. CSV imports use the same matching.
 - **Directory** lists every company (with headcount) and every person. Filter it, then click to open a card.
 - **Connect** (top bar): the map way, where you click one dot and then another.
@@ -28,7 +30,7 @@ email, and changes show up for everyone within a few seconds.
 - **Team view / My view** (left of the legend): Team view is the whole shared map, with each company shown once. My view shows only your companies and contacts, plus any company where one of your contacts works, so a company two reps both work appears in both reps' views, each with their own contacts. Other reps' contacts you've connected to appear faded. Admins can also pick any rep's view. Search, Filter, Directory and the stats follow the view.
 - **Connecting across reps:** anyone can connect their contact to any other contact, including ones they've never talked to.
 - **Legend chips** show or hide relationship types. **Filter** (top bar) narrows the map and Directory by **city** (from Location), **tag** or **rep**; a company's tag or city also keeps its people in view. Company tags show under the company name on the map.
-- **Activity** shows who changed what. **Data** imports a contacts CSV, downloads or restores a backup, and saves the map as a PNG.
+- **Activity** shows who changed what. **Data** imports a contacts CSV and saves the map as a PNG. Admins also get **Export to CSV** (contacts or companies, everything or just what's showing) and **Backup / Restore**.
 
 ## Wingmate sync
 

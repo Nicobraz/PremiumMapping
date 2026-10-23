@@ -35,6 +35,7 @@
       <div id="filter-menu" class="filter-menu" hidden>
         <label>City<select id="filter-city"><option value="">All cities</option></select></label>
         <label>Tag<select id="filter-tag"><option value="">All tags</option></select></label>
+        <label>Stage<select id="filter-stage"><option value="">All stages</option></select></label>
         <label>Rep<select id="filter-owner"><option value="">All reps</option></select></label>
         <div class="filter-actions">
           <button id="btn-clear-filters" type="button" class="btn btn-sm btn-ghost">Clear filters</button>
@@ -123,9 +124,18 @@
       <button id="btn-template" class="btn">Download template</button>
     </div>
   </section>
-  <section>
-    <h3>Backup</h3>
-    <p>Download everything as a file. Do this regularly, since anyone with the link can edit.</p>
+  <section id="export-section" hidden>
+    <h3>Export to CSV <span class="pill pill-company">Admin</span></h3>
+    <p>Opens in Excel or Google Sheets. Contacts include their company, stage, owner and latest note.</p>
+    <label class="check-line"><input id="export-shown" type="checkbox" checked> Only what's showing (current view and filters)</label>
+    <div class="row-btns">
+      <button id="btn-export-contacts" class="btn btn-primary">Export contacts</button>
+      <button id="btn-export-companies" class="btn">Export companies</button>
+    </div>
+  </section>
+  <section id="backup-section" hidden>
+    <h3>Backup <span class="pill pill-company">Admin</span></h3>
+    <p>Download everything as one file to keep somewhere safe. Restoring replaces the whole map.</p>
     <div class="row-btns">
       <a class="btn" href="/api/export.json" download>Download backup</a>
       <label id="restore-label" class="btn btn-danger-ghost file-btn">Restore backup…<input id="restore-file" type="file" accept=".json,application/json" hidden></label>
@@ -171,6 +181,7 @@
 
 <datalist id="owner-list"></datalist>
 <datalist id="tag-list"></datalist>
+<datalist id="stage-list"></datalist>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <script src="/static/app.js"></script>

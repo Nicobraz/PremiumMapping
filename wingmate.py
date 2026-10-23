@@ -227,8 +227,8 @@ def run_sync(db, client, tools, dry_run=False):
 
     dismissed = {r["ref"] for r in db.execute("SELECT ref FROM wingmate_dismissed")}
     nodes = [dict(r) for r in db.execute(
-        "SELECT id, type, name, location, email, phone, title, owner_rep, company_id, wingmate_id, wingmate_seen, "
-        "wingmate_sync FROM nodes")]
+        "SELECT id, type, name, location, email, phone, title, stage, owner_rep, company_id, wingmate_id, "
+        "wingmate_seen, wingmate_sync FROM nodes")]
     by_wm = {n["wingmate_id"]: n for n in nodes if n["wingmate_id"]}
     companies_by_name = {}
     people_by_key, people_by_email = {}, {}
@@ -283,7 +283,7 @@ def run_sync(db, client, tools, dry_run=False):
     # the first lead "owns" it (wingmate_id); later ones are recorded as aliases.
     aliases = {r["ref"]: (r["node_id"], r["seen"]) for r in db.execute("SELECT ref, node_id, seen FROM wingmate_aliases")}
     by_id = {n["id"]: n for n in nodes}
-    lead_nodes, lead_owner, comment_queue = {}, {}, []
+    lead_nodes, lead_owner, lead_stage, comment_queue = {}, {}, {}, []
     for lead in leads:
         lead_id = str(lead.get("id"))
         name = text(lead.get("name") or lead.get("identifier"))
@@ -296,6 +296,7 @@ def run_sync(db, client, tools, dry_run=False):
         location, full_address = address_parts(lead)
         owner = rep_for(first_id(lead.get("owner_ids")) or first_id(lead.get("worker_id")))
         lead_owner[lead_id] = owner
+        lead_stage[lead_id] = text(lead.get("status_string"))
         seen = text(lead.get("actioned_at") or lead.get("created_at"))
         fresh = False
         node = by_wm.get(wm_id)
@@ -355,14 +356,19 @@ def run_sync(db, client, tools, dry_run=False):
         email = text(contact.get("email")).lower()
         phone = text(contact.get("phone") or contact.get("phone_number")) or custom_value(contact, "phone", "mobile", "cell")
         title = custom_value(contact, "title", "position", "role") or ("Decision maker" if contact.get("primary_contact") else "")
+        stage = lead_stage.get(lead_id, "")
         node = by_wm.get(wm_id)
-        if node is None:
+        merged_into = aliases.get(wm_id)
+        if node is None and merged_into and merged_into[0] in by_id:
+            node = by_id[merged_into[0]]  # merged into another contact here: keep it current
+            counts["people_updated"] += sync_fields(node, {"stage": stage})
+        elif node is None:
             node = people_by_email.get(email) if email else None
             node = node or people_by_key.get((norm_name(name), company["id"]))
             if node is not None and not node.get("wingmate_id"):
                 counts["people_linked"] += 1
                 update(node, {"wingmate_id": wm_id})
-                sync_fields(node, {"name": name, "email": email, "phone": phone}, linking=True)
+                sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage}, linking=True)
             else:
                 values = {"type": "person", "name": name, "company_id": company["id"], "email": email,
                           "phone": phone, "title": title, "notes": custom_value(contact, "note", "comment"),
@@ -373,6 +379,9 @@ def run_sync(db, client, tools, dry_run=False):
                           "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
                 if dry_run and company["id"] < 0:
                     values["company_id"] = None  # the company doesn't exist yet in a preview
+                values["stage"] = stage
+                values["wingmate_sync"] = json.dumps({"name": name, "email": email, "phone": phone, "stage": stage},
+                                                     sort_keys=True)
                 node = {**values, "id": insert(values)}
                 people_by_key[(norm_name(name), company["id"])] = node
                 if email:
@@ -380,7 +389,7 @@ def run_sync(db, client, tools, dry_run=False):
                 counts["people_added"] += 1
             by_wm[wm_id] = node
         else:
-            counts["people_updated"] += sync_fields(node, {"name": name, "email": email, "phone": phone})
+            counts["people_updated"] += sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage})
         lead_contacts.setdefault(lead_id, []).append((bool(contact.get("primary_contact")), node))
 
     def note_target(lead_id, company):

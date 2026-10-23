@@ -600,3 +600,29 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .view-and-legend { width: 100%; flex-wrap: nowrap; }
   .view-and-legend .legend { flex: 1; min-width: 0; }
 }
+
+/* ---------- stage, merge, export ---------- */
+.stage-chip {
+  display: inline-block; padding: 1px 7px; border-radius: 999px; vertical-align: 1px;
+  background: #e8f1fb; color: #1d4f86; border: 1px solid #c7dbf2; font-size: 11px; font-weight: 650;
+}
+.stage-chip.big { font-size: 12px; padding: 2px 9px; }
+.stage-line { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.who .stage-chip { margin-left: 4px; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .stage-chip { background: #172a40; color: #9cc4f0; border-color: #284766; }
+}
+.panel-filter {
+  width: 100%; margin: 8px 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2);
+}
+#merge-list { margin-bottom: 10px; }
+.check-line { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; font-size: 13px; color: var(--text); }
+/* Badges next to a name in list rows stay inline (row sublines are block spans). */
+.conn-list .who .stage-chip, .conn-list .who .pill {
+  display: inline-block; width: auto; margin-left: 5px; vertical-align: 1px;
+}
+.conn-list .who .stage-chip { color: #1d4f86; font-size: 11px; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .conn-list .who .stage-chip { color: #9cc4f0; }
+}

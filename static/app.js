@@ -43,6 +43,7 @@ const state = {
   focusId: null,
   hiddenRels: new Set(),
   ownerFilter: '',
+  stageFilter: '',
   view: storeGet('pss.view') || 'team',  // 'team', 'mine' or (admins) a rep's name
   viewSets: null,       // { visible, context } node ids when a rep view is on
   tagFilter: '',
@@ -553,7 +554,7 @@ $('#legend').addEventListener('click', (evt) => {
 const cityOf = (n) => String(n.location || '').split(',')[0].trim();
 
 function activeFilterCount() {
-  return [state.cityFilter, state.tagFilter, state.ownerFilter].filter(Boolean).length;
+  return [state.cityFilter, state.tagFilter, state.ownerFilter, state.stageFilter].filter(Boolean).length;
 }
 
 // A person also matches through their company (and a company through its
@@ -562,7 +563,9 @@ function filterMatches() {
   const city = state.cityFilter.toLowerCase();
   const tag = state.tagFilter.toLowerCase();
   const owner = state.ownerFilter.toLowerCase();
+  const stage = state.stageFilter.toLowerCase();
   const cityOk = (n) => cityOf(n).toLowerCase() === city;
+  const stageOk = (p) => p.stage.trim().toLowerCase() === stage;
   const matched = new Set();
   for (const n of state.nodes.values()) {
     if (!inView(n.id)) continue;  // filters work within the current view
@@ -570,6 +573,8 @@ function filterMatches() {
     const company = n.type === 'company' ? n : companyOf(n);
     if (tag && !(company && splitTags(company.tags).includes(tag))) continue;  // tags live on companies
     if (city && !(cityOk(n) || (company && cityOk(company)) || (n.type === 'company' && peopleAt(n.id).some(cityOk)))) continue;
+    // Stage lives on contacts; a company matches through its contacts.
+    if (stage && !(n.type === 'person' ? stageOk(n) : peopleAt(n.id).some((p) => inView(p.id) && stageOk(p)))) continue;
     matched.add(n.id);
   }
   return matched;
@@ -673,7 +678,8 @@ function renderFilterSummary(matched) {
   $('#filter-count').hidden = !count;
   $('#filter-count').textContent = count;
   $('#btn-filter').classList.toggle('active', !!count);
-  const chips = [['city', 'City', state.cityFilter], ['tag', 'Tag', state.tagFilter], ['owner', 'Rep', state.ownerFilter]]
+  const chips = [['city', 'City', state.cityFilter], ['tag', 'Tag', state.tagFilter], ['stage', 'Stage', state.stageFilter],
+    ['owner', 'Rep', state.ownerFilter]]
     .filter(([, , value]) => value)
     .map(([key, label, value]) => `<button type="button" class="filter-chip" data-clear="${key}" title="Remove this filter">${label}: <b>${esc(value)}</b> ×</button>`);
   if (matched) chips.push(`<span class="muted">${plural(matched.size, 'match', 'matches')}</span>`);
@@ -697,6 +703,7 @@ function refreshFilterOptions() {
   const owners = new Map();
   const tags = new Map();
   const cities = new Map();
+  const stages = new Map();
   const bump = (map, value) => {
     const key = value.toLowerCase();
     if (!map.has(key)) map.set(key, { value, n: 0 });
@@ -707,10 +714,13 @@ function refreshFilterOptions() {
     if (n.owner_rep.trim()) bump(owners, n.owner_rep.trim());
     if (n.type === 'company') for (const t of String(n.tags || '').split(',').map((x) => x.trim()).filter(Boolean)) bump(tags, t);
     if (cityOf(n)) bump(cities, cityOf(n));
+    if (n.type === 'person' && n.stage.trim()) bump(stages, n.stage.trim());
   }
   fillSelect($('#filter-city'), countedEntries(cities), 'All cities', state.cityFilter);
   fillSelect($('#filter-tag'), countedEntries(tags), 'All tags', state.tagFilter);
   fillSelect($('#filter-owner'), countedEntries(owners), 'All reps', state.ownerFilter);
+  fillSelect($('#filter-stage'), countedEntries(stages), 'All stages', state.stageFilter);
+  $('#stage-list').innerHTML = [...stages.values()].map((t) => `<option value="${esc(t.value)}">`).join('');
   $('#owner-list').innerHTML = [...owners.values()].map((o) => `<option value="${esc(o.value)}">`).join('');
   $('#tag-list').innerHTML = [...tags.values()].map((t) => `<option value="${esc(t.value)}">`).join('');
 }
@@ -737,10 +747,12 @@ document.addEventListener('click', (evt) => {
 $('#filter-city').addEventListener('change', (evt) => setFilter('city', evt.target.value));
 $('#filter-tag').addEventListener('change', (evt) => setFilter('tag', evt.target.value));
 $('#filter-owner').addEventListener('change', (evt) => setFilter('owner', evt.target.value));
+$('#filter-stage').addEventListener('change', (evt) => setFilter('stage', evt.target.value));
 $('#btn-clear-filters').addEventListener('click', () => {
   state.cityFilter = '';
   state.tagFilter = '';
   state.ownerFilter = '';
+  state.stageFilter = '';
   refreshFilterOptions();
   setFilter('city', '');
 });
@@ -1030,6 +1042,7 @@ function actionsHtml(n) {
   if (n.phone) btns.push(`<a class="btn btn-sm" href="tel:${esc(n.phone.replace(/[^\d+]/g, ''))}">Call</a>`);
   btns.push('<button class="btn btn-sm" data-act="show-map">Show on map</button>');
   if (canEditNode(n)) btns.push('<button class="btn btn-sm" data-act="edit">Edit</button>');
+  if (canEditNode(n) && n.type === 'person') btns.push('<button class="btn btn-sm" data-act="merge" title="Fold a duplicate of this contact into it">Merge…</button>');
   const viewOnly = canEditNode(n) ? ''
     : `<div class="view-only">View only · ${n.owner_rep ? `assigned to ${esc(n.owner_rep)}` : 'unassigned'}. You can still add tags, notes and connections.</div>`;
   return `<div class="card-actions">${btns.join('')}</div>${viewOnly}`;
@@ -1125,11 +1138,15 @@ function aboutHtml(n) {
   return n.notes ? `<div class="section"><h3>About</h3><p class="about">${esc(n.notes)}</p></div>` : '';
 }
 
+function stageBadge(n) {
+  return n && n.type === 'person' && n.stage ? ` <span class="stage-chip" title="Pipeline stage">${esc(n.stage)}</span>` : '';
+}
+
 function connListHtml(rows, empty) {
   if (!rows.length) return `<p class="muted">${empty}</p>`;
   return `<ul class="conn-list">${rows.map((r) => `<li data-goto="${r.other.id}">
       ${avatar(r.other, 'avatar-sm')}
-      <span class="who"><b>${esc(r.other.name)}</b>
+      <span class="who"><b>${esc(r.other.name)}</b>${stageBadge(r.other)}
         <span><i class="rel-dot" style="background:${r.color}"></i>${esc(capitalize(r.phrase))}${r.other.title ? ` · ${esc(r.other.title)}` : ''}</span></span>
       <span class="strength" title="${STRENGTH[r.strength]}">${'●'.repeat(r.strength)}${'○'.repeat(3 - r.strength)}</span>
       ${canEditEdge(state.edges.get(r.edgeId)) ? `<button class="icon-btn icon-sm" data-edge="${r.edgeId}" title="Edit connection" aria-label="Edit connection">✎</button>` : ''}
@@ -1190,9 +1207,12 @@ function personCardHtml(n) {
   const outside = rows.filter((r) => !inside.includes(r));
   const linked = new Set(rows.map((r) => r.other.id));
   const unlinked = company ? peopleAt(company.id).filter((p) => p.id !== n.id && !linked.has(p.id)) : [];
-  return heroHtml(n, n.title, company
+  const stage = n.stage
+    ? `<div class="stage-line">Stage: <span class="stage-chip big">${esc(n.stage)}</span>${n.owner_rep ? ` <span class="muted">· ${esc(n.owner_rep)}'s contact</span>` : ''}</div>`
+    : '';
+  return heroHtml(n, n.title, (company
     ? `<button class="hero-link" data-goto="${company.id}">${esc(company.name)} →</button>`
-    : '<div class="hero-sub muted">No company</div>')
+    : '<div class="hero-sub muted">No company</div>') + stage)
     + actionsHtml(n)
     + factsHtml(n)
     + aboutHtml(n)
@@ -1220,7 +1240,7 @@ function rosterRowHtml(p, staffIds) {
   const noteCount = notesFor(p.id).length;
   return `<li data-goto="${p.id}">
     ${avatar(p, 'avatar-sm')}
-    <span class="who"><b>${esc(p.name)}</b>${detail ? `<span>${esc(detail)}</span>` : ''}</span>
+    <span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}${detail ? `<span>${esc(detail)}</span>` : ''}</span>
     ${noteCount ? `<span class="badge" title="${plural(noteCount, 'note', 'notes')}">${noteCount} ✎</span>` : ''}
   </li>`;
 }
@@ -1351,6 +1371,7 @@ function nodeFormHtml(n, isNew) {
     ${field('name', 'Name', `required maxlength="300" autocomplete="off" placeholder="${person ? 'Jane Smith' : 'Acme Corp'}"`)}
     <div class="dup-hint" data-dup-hint role="status" hidden></div>
     ${person ? field('title', 'Title / role', 'maxlength="300" placeholder="VP of Operations"') : ''}
+    ${person ? field('stage', `Pipeline stage${n.wingmate_id ? ' <small>synced from Wingmate; a change there updates it</small>' : ''}`, 'list="stage-list" maxlength="60" autocomplete="off" placeholder="e.g. Meeting Set"') : ''}
     ${person ? `<label>Company<select name="company_id">
         <option value="">None</option>
         ${companies.map((c) => `<option value="${c.id}" ${c.id === n.company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
@@ -1469,6 +1490,60 @@ function openNewEdgePanel(sourceId, targetId) {
     + edgeFormHtml(draft, true));
 }
 
+// ----- merging duplicate contacts -----
+
+function mergeCandidates(keep, query) {
+  const q = query.trim().toLowerCase();
+  const sameName = normName(keep.name);
+  const email = keep.email.trim().toLowerCase();
+  const score = (c) => (normName(c.name) === sameName || (email && c.email.trim().toLowerCase() === email) ? 0
+    : c.company_id != null && c.company_id === keep.company_id ? 1 : 2);
+  return [...state.nodes.values()]
+    .filter((c) => c.type === 'person' && c.id !== keep.id && canEditNode(c))
+    .filter((c) => !q || [c.name, c.email, c.title, companyOf(c)?.name].some((v) => String(v || '').toLowerCase().includes(q)))
+    .sort((a, b) => score(a) - score(b) || byName(a, b))
+    .slice(0, 40)
+    .map((c) => ({ c, likely: score(c) === 0 }));
+}
+
+function renderMergeList() {
+  const list = $('#merge-list');
+  const keep = state.nodes.get(state.panel?.id);
+  if (!list || !keep) return;
+  const items = mergeCandidates(keep, $('#merge-filter').value);
+  list.innerHTML = items.length ? items.map(({ c, likely }) => {
+    const detail = [c.title, companyOf(c)?.name, c.email, c.owner_rep && `${c.owner_rep}'s`].filter(Boolean).join(' · ');
+    return `<li data-merge="${c.id}" title="Merge ${esc(c.name)} into ${esc(keep.name)}">${avatar(c, 'avatar-sm')}
+      <span class="who"><b>${esc(c.name)}</b>${stageBadge(c)}${likely ? ' <span class="pill">Likely duplicate</span>' : ''}<span>${esc(detail)}</span></span></li>`;
+  }).join('') : `<li class="muted">${state.isAdmin ? 'No other contacts match.' : 'No other contacts of yours match. You can only merge contacts assigned to you.'}</li>`;
+}
+
+function openMergePanel(id) {
+  const keep = state.nodes.get(id);
+  if (!keep) return;
+  showPanel({ kind: 'merge', id }, `${panelHead('Merge', '', `Merge into ${keep.name}`)}
+    <div class="section">
+      <p class="muted">Pick the duplicate. Its notes and connections move to <b>${esc(keep.name)}</b>, any details ${esc(keep.name)} is missing are filled in from it, and then the duplicate is removed.</p>
+      <input id="merge-filter" class="panel-filter" type="search" placeholder="Search contacts…" autocomplete="off">
+      <ul id="merge-list" class="conn-list"></ul>
+      <button type="button" class="btn btn-sm btn-ghost" data-act="cancel-merge">← Back to ${esc(keep.name)}</button>
+    </div>`);
+  renderMergeList();
+}
+
+async function mergeInto(keepId, otherId) {
+  const keep = state.nodes.get(keepId);
+  const other = state.nodes.get(otherId);
+  if (!keep || !other) return;
+  if (!confirm(`Merge ${other.name} into ${keep.name}?\n\n${other.name}'s notes and connections move to ${keep.name}, missing details are filled in, and ${other.name} is removed. This can't be undone.`)) return;
+  try {
+    await api('POST', `/api/nodes/${keepId}/merge`, { other_id: otherId });
+    await sync();
+    openNodePanel(keepId);
+    toast(`Merged ${other.name} into ${keep.name}`);
+  } catch (err) { toast(err.message, true); }
+}
+
 // ----- directory -----
 
 function openDirectory(tab) {
@@ -1505,7 +1580,7 @@ function renderDirectoryList() {
     const items = [...state.nodes.values()].filter((n) => n.type === 'person' && matches(n)).sort(byName);
     list.innerHTML = items.length ? items.map((p) => {
       const detail = [p.title, companyOf(p)?.name].filter(Boolean).join(' · ');
-      return `<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${detail ? `<span>${esc(detail)}</span>` : ''}</span></li>`;
+      return `<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}${detail ? `<span>${esc(detail)}</span>` : ''}</span></li>`;
     }).join('') : '<li class="muted">No people match.</li>';
   }
 }
@@ -1518,6 +1593,7 @@ function refreshPanelAfterSync() {
   if (p.kind === 'edge' && !state.edges.has(p.id)) { closePanel(); toast('That connection was deleted by someone else'); return; }
   if (p.kind === 'new-edge' && (!state.nodes.has(p.sourceId) || !state.nodes.has(p.targetId))) { closePanel(); return; }
   if (p.kind === 'directory') { renderDirectoryList(); return; }
+  if (p.kind === 'merge') { if (state.nodes.has(p.id)) renderMergeList(); else closePanel(); return; }
   if (state.panelDirty) return;
   if (p.kind === 'admin') rerenderAdmin();
   else if (p.kind === 'node') rerenderCard();
@@ -1535,6 +1611,7 @@ panel.addEventListener('input', (evt) => {
     return;
   }
   if (evt.target.matches('.tag-add input')) { showTagSuggestions(evt.target); return; }
+  if (evt.target.id === 'merge-filter') { renderMergeList(); return; }
   state.panelDirty = true;
   const nodeForm = evt.target.closest('[data-form="node"]');
   if (nodeForm && (evt.target.name === 'name' || evt.target.name === 'email')) updateDupHint(nodeForm);
@@ -1582,6 +1659,9 @@ panel.addEventListener('click', async (evt) => {
     return;
   }
 
+  const mergeRow = evt.target.closest('[data-merge]');
+  if (mergeRow) { await mergeInto(p.id, Number(mergeRow.dataset.merge)); return; }
+
   const addtag = evt.target.closest('[data-addtag]');
   if (addtag) { await addTag(addtag.dataset.addtag); return; }
 
@@ -1624,6 +1704,8 @@ panel.addEventListener('click', async (evt) => {
   else if (act === 'cancel-edit') openNodePanel(p.id);
   else if (act === 'show-map') focusOn(p.id);
   else if (act === 'add-person-here') openNewNodePanel('person', p.id);
+  else if (act === 'merge') openMergePanel(p.id);
+  else if (act === 'cancel-merge') openNodePanel(p.id);
   else if (act === 'force-save') {
     const form = panel.querySelector('[data-form="node"]');
     form.dataset.force = '1';
@@ -2052,11 +2134,37 @@ $('#btn-close-activity').addEventListener('click', closeActivity);
 
 const dataDialog = $('#data-dialog');
 function openDataDialog() {
+  $('#backup-section').hidden = !state.isAdmin;
+  $('#export-section').hidden = !state.isAdmin;
   $('#restore-label').hidden = !state.isAdmin;
   $('#csv-owner-note').hidden = state.isAdmin;
   dataDialog.showModal();
 }
 $('#btn-data').addEventListener('click', openDataDialog);
+
+// What's on screen right now: the current view, narrowed by any filters.
+function shownIds(type) {
+  const matched = activeFilterCount() ? filterMatches() : null;
+  return [...state.nodes.values()]
+    .filter((n) => n.type === type && inView(n.id) && (!matched || matched.has(n.id)))
+    .map((n) => n.id);
+}
+
+async function exportCsv(kind) {
+  const onlyShown = $('#export-shown').checked;
+  const body = onlyShown ? { ids: shownIds(kind === 'contacts' ? 'person' : 'company') } : {};
+  try {
+    const res = await fetch(`/api/export/${kind}.csv`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Export failed');
+    const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || `pss-connect-${kind}.csv`;
+    download(name, await res.blob());
+    toast(`Exported ${onlyShown ? plural(body.ids.length, kind === 'contacts' ? 'contact' : 'company', kind) : `all ${kind}`}`);
+  } catch (err) { toast(err.message, true); }
+}
+$('#btn-export-contacts').addEventListener('click', () => exportCsv('contacts'));
+$('#btn-export-companies').addEventListener('click', () => exportCsv('companies'));
 dataDialog.addEventListener('click', (evt) => {
   if (evt.target === dataDialog || evt.target.closest('[data-close]')) dataDialog.close();
 });

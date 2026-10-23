@@ -40,7 +40,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 NODE_TYPES = ("company", "person")
 REL_TYPES = ("knows", "reports_to", "referred", "partner", "vendor", "competitor", "other")
-NODE_TEXT_FIELDS = ("name", "title", "email", "phone", "location", "tags", "owner_rep", "notes")
+NODE_TEXT_FIELDS = ("name", "title", "email", "phone", "location", "tags", "owner_rep", "notes", "stage")
 NODE_COLUMNS = ("id", "type", "company_id", "x", "y", "created_at", "updated_at", "updated_by",
                 "wingmate_id", "wingmate_seen", "wingmate_sync") + NODE_TEXT_FIELDS
 EDGE_COLUMNS = ("id", "source_id", "target_id", "rel_type", "strength", "notes",
@@ -210,6 +210,8 @@ MIGRATIONS = [  # (table, column, definition, backfill SQL run once when the col
     ("notes", "external_id", "TEXT NOT NULL DEFAULT ''", None),
     # The Wingmate values last synced, so PSS edits stick until Wingmate changes that field.
     ("nodes", "wingmate_sync", "TEXT NOT NULL DEFAULT ''", None),
+    # Where a contact is in the sales pipeline (from Wingmate's lead status, or set here).
+    ("nodes", "stage", "TEXT NOT NULL DEFAULT ''", None),
 ]
 
 
@@ -502,6 +504,8 @@ def clean_node_fields(db, data, node_type):
         if field in data:
             limit = 5000 if field == "notes" else 300
             out[field] = str(data[field] if data[field] is not None else "").strip()[:limit]
+    if "stage" in out and node_type != "person":
+        out["stage"] = ""  # stage belongs to contacts
     if "tags" in out:
         # Tags belong to companies only; for companies keep a tidy, de-duplicated list.
         out["tags"] = join_tags(db, out["tags"].split(",")) if node_type == "company" else ""
@@ -845,6 +849,122 @@ def change_tags(node_id):
     return jsonify(node_row(db, node_id))
 
 
+# ---------- merging contacts ----------
+
+@app.post("/api/nodes/<int:node_id>/merge")
+def merge_contacts(node_id):
+    """Folds a duplicate contact into this one: notes and connections move over, blank fields
+    are filled from the duplicate, and the duplicate is removed. Wingmate keeps syncing into
+    the kept contact."""
+    db = get_db()
+    keep = node_row(db, node_id)
+    other = node_row(db, to_int((request.get_json(silent=True) or {}).get("other_id")))
+    if not keep or not other:
+        return bad("Not found", 404)
+    if keep["id"] == other["id"] or keep["type"] != "person" or other["type"] != "person":
+        return bad("Pick two different contacts to merge")
+    if not can_edit_node(keep) or not can_edit_node(other):
+        return not_yours("contacts assigned to you")
+
+    fills = {f: other[f] for f in ("title", "email", "phone", "location", "stage") if not keep[f] and other[f]}
+    if other["notes"] and other["notes"] not in keep["notes"]:
+        fills["notes"] = f"{keep['notes']}\n\n{other['notes']}".strip()
+    if keep["company_id"] is None and other["company_id"] is not None:
+        fills["company_id"] = other["company_id"]
+    if other["wingmate_id"]:
+        if keep["wingmate_id"]:
+            db.execute("INSERT INTO wingmate_aliases (ref, node_id, seen) VALUES (?, ?, '') "
+                       "ON CONFLICT (ref) DO UPDATE SET node_id = excluded.node_id", (other["wingmate_id"], keep["id"]))
+        else:
+            fills.update(wingmate_id=other["wingmate_id"], wingmate_sync=other["wingmate_sync"],
+                         wingmate_seen=other["wingmate_seen"])
+    db.execute("UPDATE wingmate_aliases SET node_id = ? WHERE node_id = ?", (keep["id"], other["id"]))
+    db.execute("UPDATE notes SET node_id = ? WHERE node_id = ?", (keep["id"], other["id"]))
+
+    # Connections: move them over, dropping any that would duplicate one the kept contact has.
+    existing = {(e["rel_type"], e["target_id"] if e["source_id"] == keep["id"] else e["source_id"])
+                for e in db.execute("SELECT * FROM edges WHERE source_id = ? OR target_id = ?", (keep["id"], keep["id"]))}
+    for e in db.execute("SELECT * FROM edges WHERE source_id = ? OR target_id = ?", (other["id"], other["id"])).fetchall():
+        far = e["target_id"] if e["source_id"] == other["id"] else e["source_id"]
+        if far == keep["id"] or (e["rel_type"], far) in existing:
+            db.execute("DELETE FROM edges WHERE id = ?", (e["id"],))
+            continue
+        column = "source_id" if e["source_id"] == other["id"] else "target_id"
+        db.execute(f"UPDATE edges SET {column} = ? WHERE id = ?", (keep["id"], e["id"]))
+        existing.add((e["rel_type"], far))
+
+    if other["wingmate_id"]:
+        # The duplicate's Wingmate record now feeds the kept contact; don't treat it as deleted.
+        db.execute("DELETE FROM wingmate_dismissed WHERE ref = ?", (other["wingmate_id"],))
+    db.execute("DELETE FROM nodes WHERE id = ?", (other["id"],))
+    fills.update(updated_at=now(), updated_by=actor())
+    assignments = ", ".join(f"{col} = ?" for col in fills)
+    db.execute(f"UPDATE nodes SET {assignments} WHERE id = ?", [*fills.values(), keep["id"]])
+    log(db, "merge", f"Merged {other['name']} into {keep['name']}")
+    bump_version(db)
+    db.commit()
+    return jsonify(node_row(db, keep["id"]))
+
+
+# ---------- CSV export (admin) ----------
+
+def csv_response(rows, header, filename):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(header)
+    writer.writerows(rows)
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    return Response("\ufeff" + buffer.getvalue(), mimetype="text/csv",  # BOM so Excel reads UTF-8
+                    headers={"Content-Disposition": f'attachment; filename="pss-connect-{filename}-{stamp}.csv"'})
+
+
+@app.post("/api/export/<kind>.csv")
+@admin_only
+def export_csv(kind):
+    """Contacts or companies as CSV; optional {"ids": [...]} limits it to what's on screen."""
+    if kind not in ("contacts", "companies"):
+        return bad("Not found", 404)
+    db = get_db()
+    ids = (request.get_json(silent=True) or {}).get("ids")
+    wanted = {to_int(i) for i in ids} if isinstance(ids, list) else None
+    nodes = {r["id"]: dict(r) for r in db.execute("SELECT * FROM nodes")}
+    note_counts, last_note = {}, {}
+    for r in db.execute("SELECT node_id, body, created_at FROM notes ORDER BY created_at"):
+        note_counts[r["node_id"]] = note_counts.get(r["node_id"], 0) + 1
+        last_note[r["node_id"]] = r["body"]
+    links = {}
+    for e in db.execute("SELECT source_id, target_id FROM edges"):
+        for end in (e["source_id"], e["target_id"]):
+            links[end] = links.get(end, 0) + 1
+    picked = [n for n in nodes.values() if n["type"] == ("person" if kind == "contacts" else "company")
+              and (wanted is None or n["id"] in wanted)]
+    picked.sort(key=lambda n: n["name"].lower())
+    source = lambda n: "Wingmate" if n["wingmate_id"] else "PSS Connect"
+    if kind == "contacts":
+        header = ["Name", "Title", "Company", "Stage", "Email", "Phone", "Location", "Owner rep", "Company tags",
+                  "Connections", "Notes", "Latest note", "About", "Source", "Created", "Last edited", "Last edited by"]
+        rows = []
+        for n in picked:
+            company = nodes.get(n["company_id"]) or {}
+            rows.append([n["name"], n["title"], company.get("name", ""), n["stage"], n["email"], n["phone"],
+                         n["location"] or company.get("location", ""), n["owner_rep"], company.get("tags", ""),
+                         links.get(n["id"], 0), note_counts.get(n["id"], 0), last_note.get(n["id"], ""), n["notes"],
+                         source(n), n["created_at"][:10], n["updated_at"][:10], n["updated_by"]])
+    else:
+        header = ["Company", "Location", "Tags", "Owner rep", "Contacts", "Contact names", "Stages",
+                  "Connections", "Notes", "About", "Source", "Created", "Last edited", "Last edited by"]
+        rows = []
+        for n in picked:
+            staff = sorted((p for p in nodes.values() if p["type"] == "person" and p["company_id"] == n["id"]),
+                           key=lambda p: p["name"].lower())
+            stages = sorted({p["stage"] for p in staff if p["stage"]})
+            rows.append([n["name"], n["location"], n["tags"], n["owner_rep"], len(staff),
+                         "; ".join(p["name"] for p in staff), "; ".join(stages), links.get(n["id"], 0),
+                         note_counts.get(n["id"], 0), n["notes"], source(n), n["created_at"][:10],
+                         n["updated_at"][:10], n["updated_by"]])
+    return csv_response(rows, header, kind)
+
+
 # ---------- notes ----------
 
 @app.post("/api/nodes/<int:node_id>/notes")
@@ -1134,6 +1254,7 @@ def get_activity():
 # ---------- import / export ----------
 
 @app.get("/api/export.json")
+@admin_only
 def export_json():
     db = get_db()
     payload = {"app": "pss-connect", "exported_at": now(), "version": current_version(db), **snapshot(db)}
