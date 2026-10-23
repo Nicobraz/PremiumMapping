@@ -124,6 +124,31 @@
   </aside>
 </main>
 
+<!-- The AI assistant: a tab on the right edge opens a chat panel. -->
+<button id="ai-tab" class="ai-tab" type="button" aria-controls="ai-drawer" aria-expanded="false" hidden>
+  <span>✦ Ask AI</span>
+</button>
+<aside id="ai-drawer" class="ai-drawer" aria-label="AI assistant" hidden>
+  <div class="panel-head ai-head">
+    <h2>✦ Ask AI</h2>
+    <button id="ai-new" type="button" class="btn btn-sm btn-ghost" title="Start a new conversation">New chat</button>
+    <button id="ai-close" type="button" class="icon-btn" aria-label="Close">×</button>
+  </div>
+  <div id="ai-log" class="ai-log" aria-live="polite"></div>
+  <form id="ai-form" class="ai-form">
+    <div id="ai-files" class="ai-files" hidden></div>
+    <div class="ai-row">
+      <label class="icon-btn ai-attach" title="Attach a photo, PDF or CSV" aria-label="Attach a file">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></svg>
+        <input id="ai-file" type="file" multiple accept="image/*,.pdf,.csv,.tsv,.txt,text/csv,text/plain,application/pdf" hidden>
+      </label>
+      <textarea id="ai-input" rows="1" maxlength="20000" placeholder="Ask anything, or tell me about a meeting…" aria-label="Message"></textarea>
+      <button id="ai-send" type="submit" class="btn btn-primary">Send</button>
+    </div>
+    <div id="ai-left" class="ai-left" hidden></div>
+  </form>
+</aside>
+
 <dialog id="data-dialog" class="dialog">
   <div class="panel-head">
     <h2>Data</h2>
@@ -245,6 +270,7 @@
   <button type="button" class="sheet-item" data-sheet="add-company">+ Company</button>
 </div>
 <div id="sheet-more" class="sheet" role="menu" hidden>
+  <button type="button" class="sheet-item" data-sheet="ai">✦ Ask AI</button>
   <button type="button" class="sheet-item" data-sheet="filter">Filter the map</button>
   <button type="button" class="sheet-item" data-sheet="requests">Transfer requests <span id="sheet-requests-count" class="count-badge" hidden></span></button>
   <button type="button" class="sheet-item" data-sheet="activity">Activity</button>

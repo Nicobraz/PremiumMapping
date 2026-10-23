@@ -7,8 +7,9 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    # Keep a single worker: the app caches the map version in memory.
-    startCommand: gunicorn app:app --workers 1 --threads 4 --bind 0.0.0.0:$PORT
+    # Keep a single worker: the app caches the map version in memory. Eight threads
+    # leave room for AI assistant replies, which stream for up to a minute.
+    startCommand: gunicorn app:app --workers 1 --threads 8 --bind 0.0.0.0:$PORT
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION

@@ -33,6 +33,7 @@ const state = {
   reps: [],
   transfers: [],        // lead transfer requests
   wingmate: null,       // admin-only Wingmate connection status
+  aiAdmin: null,        // admin-only AI assistant settings and usage
   wingmateEditing: false,
   isAdmin: false,
   me: null,             // the signed-in rep, from /api/me
@@ -112,6 +113,8 @@ function renderMeChip() {
   chip.hidden = !name;
   chip.innerHTML = `<span class="avatar avatar-xs" style="--hue:var(--accent)">${esc(initials(name))}</span><span class="me-name">${esc(name)}</span>`;
   chip.title = state.me ? `Signed in as ${state.me.email}. Click to sign out.` : 'Signed in as admin. Click to sign out.';
+  $('#ai-tab').hidden = !state.me;
+  if (!state.me && typeof setAiOpen === 'function') setAiOpen(false);
 }
 
 function showSignIn(on) {
@@ -1909,6 +1912,15 @@ panel.addEventListener('keydown', (evt) => {
 
 panel.addEventListener('click', async (evt) => {
   const p = state.panel;
+  if (evt.target.closest('[data-ai-admin="off"]')) {
+    if (!confirm('Turn off the AI assistant for everyone?')) return;
+    try {
+      state.aiAdmin = await api('POST', '/api/assistant/settings', { disconnect: true });
+      $('#ai-admin-section').innerHTML = aiAdminHtml();
+      ai.enabled = null;
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
   const wmBtn = evt.target.closest('[data-wm-act]');
   if (wmBtn) { await handleWingmateAction(wmBtn.dataset.wmAct); return; }
   const repBtn = evt.target.closest('[data-rep-act]');
@@ -2047,7 +2059,13 @@ panel.addEventListener('submit', async (evt) => {
   const p = state.panel;
   if (submit) submit.disabled = true;  // the tag box submits on Enter and has no button
   try {
-    if (form.dataset.form === 'wingmate-settings') {
+    if (form.dataset.form === 'ai-settings') {
+      state.aiAdmin = await api('POST', '/api/assistant/settings', { api_key: data.api_key });
+      state.panelDirty = false;
+      $('#ai-admin-section').innerHTML = aiAdminHtml();
+      ai.enabled = null;
+      toast('AI assistant is on');
+    } else if (form.dataset.form === 'wingmate-settings') {
       state.wingmate = await api('POST', '/api/wingmate/settings', { token: data.token, campaign_id: data.campaign_id });
       state.wingmateEditing = false;
       state.panelDirty = false;
@@ -2225,6 +2243,7 @@ function openAdminPanel() {
       </form>
     </div>` : ''}
     <div class="section" id="wingmate-section">${wingmateSectionHtml()}</div>
+    <div class="section" id="ai-admin-section">${aiAdminHtml()}</div>
     <div class="section">
       <h3>Backup admin password</h3>
       <p class="muted">Used with “Admin login” on the sign-in screen, in case an admin gets locked out.</p>
@@ -2240,6 +2259,35 @@ function openAdminPanel() {
     </div>
     ${state.me?.is_admin ? '' : '<div class="section"><button class="btn btn-sm" data-rep-act="logout">Log out of admin</button></div>'}`);
   loadWingmate();
+  loadAiAdmin();
+}
+
+// ----- AI assistant (admin) -----
+
+async function loadAiAdmin() {
+  try { state.aiAdmin = await api('GET', '/api/assistant/settings'); } catch { state.aiAdmin = null; }
+  const box = $('#ai-admin-section');
+  if (box) box.innerHTML = aiAdminHtml();
+}
+
+function aiAdminHtml() {
+  const a = state.aiAdmin;
+  if (!a) return '<h3>AI assistant</h3><p class="muted">Loading…</p>';
+  const usage = a.usage;
+  const money = (n) => `$${n.toFixed(2)}`;
+  const reps = usage.by_rep.length
+    ? `<ul class="ai-usage">${usage.by_rep.map((r) => `<li>${esc(r.name)}: ${plural(r.questions, 'question', 'questions')}, ${money(r.cost)}</li>`).join('')}</ul>` : '';
+  const form = a.env_managed ? '<p class="muted">The key is set in Render (ANTHROPIC_API_KEY). Change it there.</p>'
+    : `<form class="rep-form" data-form="ai-settings">
+        <input name="api_key" type="password" required autocomplete="off" placeholder="${a.configured ? `Anthropic API key (saved, ending ${esc(a.key_hint)})` : 'Anthropic API key (sk-ant-…)'}" aria-label="Anthropic API key">
+        <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">${a.configured ? 'Replace key' : 'Save & turn on'}</button>
+        ${a.configured ? '<button type="button" class="btn btn-sm btn-danger-ghost" data-ai-admin="off">Turn off</button>' : ''}</div>
+        <p class="muted">Create a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> → API keys, and add billing there. You can set a monthly spend limit in the Console.</p>
+      </form>`;
+  return `<h3>AI assistant ${a.configured ? '<span class="pill pill-company">On</span>' : ''}</h3>
+    <p class="muted">The “Ask AI” tab: reps chat with ${esc(a.model)} inside PSS Connect. It works as the rep (same permissions, no deleting) and is paid from the team’s Anthropic account. Up to ${a.daily_limit} questions per rep per day.</p>
+    ${a.configured ? `<p class="wm-result">This month: ${plural(usage.questions, 'question', 'questions')}, about ${money(usage.cost)}.</p>${reps}` : ''}
+    ${form}`;
 }
 
 // ----- Wingmate -----
@@ -2669,6 +2717,7 @@ function syncNav(sheet) {
 $('#bottom-nav').addEventListener('click', (evt) => {
   const which = evt.target.closest('[data-nav]')?.dataset.nav;
   if (!which) return;
+  setAiOpen(false);
   if (which === 'map') {
     closeSheets(); toggleFilterMenu(false); closeActivity(); closePanel();
     cy.resize();
@@ -2698,9 +2747,313 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
     fit: () => click('#btn-fit'),
     layout: () => click('#btn-layout'),
     signout: () => click('#me-chip'),
+    ai: () => setAiOpen(true),
   })[action]?.();
   if (action !== 'filter' && action !== 'activity') syncNav();
 }));
+
+// ---------- AI assistant (the "Ask AI" side panel) ----------
+// Chats with Claude through the server (/api/assistant), which works as the signed-in rep.
+
+const ai = { open: false, busy: false, enabled: null, reason: '', messages: [], files: [], left: null, notice: '' };
+const aiLog = $('#ai-log');
+const aiInput = $('#ai-input');
+const AI_SUGGESTIONS = [
+  'What should I follow up on this week?',
+  'Show my high-priority contacts',
+  'Add contacts from a business card photo',
+  'I’ll paste a list of contacts to add',
+  'What changed on the team today?',
+];
+
+function setAiOpen(open) {
+  if (ai.open === open) return;
+  ai.open = open;
+  $('#ai-drawer').hidden = !open;
+  document.body.classList.toggle('ai-open', open);
+  $('#ai-tab').setAttribute('aria-expanded', String(open));
+  if (open) {
+    closeSheets();
+    if (ai.enabled === null || !ai.messages.length) loadAi();
+    if (!isPhone()) setTimeout(() => aiInput.focus(), 50);
+  }
+  requestAnimationFrame(() => cy.resize());
+  syncNav(open ? 'more' : undefined);
+}
+
+async function loadAi() {
+  try {
+    const data = await api('GET', '/api/assistant');
+    ai.enabled = data.enabled;
+    ai.reason = data.reason || '';
+    if (data.enabled) { ai.messages = data.messages; ai.left = data.left_today; }
+  } catch (err) {
+    ai.enabled = false;
+    ai.reason = err.message;
+  }
+  renderAi(true);
+}
+
+// A little Markdown: paragraphs, bullet and numbered lists, **bold**, `code`, and links.
+// Links to #record-ID open that card; only http(s) links leave the app.
+function aiMarkdown(src) {
+  const inline = (t) => t
+    .replace(/\[([^\]]+)\]\(#record-(\d+)\)/g, '<a href="#" data-goto="$2">$1</a>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+  let html = '';
+  let list = '';
+  for (const line of esc(src || '').split('\n')) {
+    const item = line.match(/^\s*(?:[-*•]|(\d+)[.)])\s+(.*)$/);
+    if (item) {
+      const tag = item[1] ? 'ol' : 'ul';
+      if (list !== tag) { html += (list ? `</${list}>` : '') + `<${tag}>`; list = tag; }
+      html += `<li>${inline(item[2])}</li>`;
+      continue;
+    }
+    if (list) { html += `</${list}>`; list = ''; }
+    const heading = line.match(/^#{1,4}\s+(.*)$/);
+    if (heading) html += `<p><b>${inline(heading[1])}</b></p>`;
+    else if (line.trim()) html += `<p>${inline(line)}</p>`;
+  }
+  return html + (list ? `</${list}>` : '');
+}
+
+function aiMessageHtml(m) {
+  if (m.role === 'user') {
+    const files = m.files?.length ? `<div class="ai-attached">${m.files.map((f) => `📎 ${esc(f)}`).join('<br>')}</div>` : '';
+    return `<div class="ai-msg user">${files}${esc(m.text)}</div>`;
+  }
+  const chips = [...new Set(m.tools || [])].map((t) => `<span class="ai-chip">${esc(t)}</span>`)
+    .concat((m.failed || []).map((t) => `<span class="ai-chip err">${esc(t)} failed</span>`)).join('');
+  const working = m.pending ? `<div class="ai-status"><span class="ai-dots"><i></i><i></i><i></i></span>${esc(m.doing || 'Thinking…')}</div>` : '';
+  const error = m.error ? `<div class="ai-error">${esc(m.error)}</div>` : '';
+  if (!m.text && !chips && !working && !error) return '';
+  return `<div class="ai-msg bot">${chips ? `<div class="ai-tools">${chips}</div>` : ''}${aiMarkdown(m.text)}${working}${error}</div>`;
+}
+
+function renderAi(scroll) {
+  const nearBottom = aiLog.scrollHeight - aiLog.scrollTop - aiLog.clientHeight < 80;
+  $('#ai-form').hidden = ai.enabled === false;
+  $('#ai-new').hidden = !ai.enabled;
+  if (ai.enabled === false) {
+    aiLog.innerHTML = `<div class="ai-empty"><h3>Ask AI</h3><p>${esc(ai.reason)}</p></div>`;
+    return;
+  }
+  if (ai.enabled === null) {
+    aiLog.innerHTML = '<div class="ai-status"><span class="ai-dots"><i></i><i></i><i></i></span>Loading…</div>';
+    return;
+  }
+  const intro = ai.messages.length ? '' : `<div class="ai-empty">
+      <h3>Hi ${esc(state.me?.name.split(' ')[0] || 'there')} 👋</h3>
+      <p>Ask about any company or contact, tell me about a meeting, or attach a business card, spreadsheet or list,
+        and I’ll update PSS Connect as you. I can also look things up in Wingmate. I can’t delete anything.</p>
+      <div class="ai-suggest">${AI_SUGGESTIONS.map((t) => `<button type="button" data-ai-suggest="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+    </div>`;
+  const notice = ai.notice ? `<div class="ai-notice">${esc(ai.notice)}</div>` : '';
+  aiLog.innerHTML = intro + notice + ai.messages.map(aiMessageHtml).join('');
+  const left = $('#ai-left');
+  left.hidden = ai.left == null || ai.left > 20;
+  left.textContent = ai.left === 0 ? 'You’ve used today’s questions. More tomorrow.' : `${ai.left} questions left today`;
+  $('#ai-send').disabled = ai.busy || ai.left === 0;
+  if (scroll || nearBottom) aiLog.scrollTop = aiLog.scrollHeight;
+}
+
+let aiRenderQueued = false;
+function renderAiSoon() {
+  if (aiRenderQueued) return;
+  aiRenderQueued = true;
+  requestAnimationFrame(() => { aiRenderQueued = false; renderAi(); });
+}
+
+async function sendAi(text) {
+  text = text.trim();
+  if (ai.busy || (!text && !ai.files.length)) return;
+  const files = ai.files;
+  ai.busy = true;
+  ai.files = [];
+  ai.notice = '';
+  renderAiFiles();
+  aiInput.value = '';
+  autosizeAi();
+  ai.messages.push({ role: 'user', text, files: files.map((f) => f.name) });
+  const bot = { role: 'assistant', text: '', base: '', tools: [], failed: [], pending: true, doing: 'Thinking…' };
+  ai.messages.push(bot);
+  renderAi(true);
+  try {
+    const res = await fetch('/api/assistant/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, attachments: files.map(({ name, kind, media_type, data, text: body }) => ({ name, kind, media_type, data, text: body })) }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      if (body.signed_out) { showSignIn(true); }
+      throw new Error(body.error || 'Something went wrong. Try again.');
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let cut;
+      while ((cut = buffer.indexOf('\n\n')) >= 0) {
+        handleAiEvent(buffer.slice(0, cut), bot);
+        buffer = buffer.slice(cut + 2);
+      }
+    }
+  } catch (err) {
+    bot.error = err.message === 'Failed to fetch' ? 'Lost the connection. Try again.' : err.message;
+  }
+  bot.pending = false;
+  ai.busy = false;
+  renderAi();
+}
+
+function handleAiEvent(chunk, bot) {
+  const event = chunk.match(/^event: (.*)$/m)?.[1];
+  let data = {};
+  try { data = JSON.parse(chunk.match(/^data: (.*)$/m)?.[1] || '{}'); } catch { return; }
+  if (event === 'text') {
+    bot.text += data.text;
+    bot.doing = 'Writing…';
+  } else if (event === 'tool') {
+    if (bot.text && !bot.text.endsWith('\n\n')) bot.text += '\n\n';
+    bot.tools.push(data.label);
+    bot.doing = `${data.label}…`;
+  } else if (event === 'tool_done') {
+    if (!data.ok) bot.failed.push(bot.tools[bot.tools.length - 1]);
+    bot.base = bot.text;
+    bot.doing = 'Thinking…';
+  } else if (event === 'discard') {
+    bot.text = bot.base;  // a reply that was withdrawn mid-way
+  } else if (event === 'notice') {
+    ai.notice = data.text;
+  } else if (event === 'error') {
+    bot.error = data.text;
+  } else if (event === 'done') {
+    ai.left = data.left_today;
+    if (data.changed) sync();
+  }
+  renderAiSoon();
+}
+
+// Attachments: photos are shrunk in the browser first; CSV and text files go as text.
+async function addAiFiles(list) {
+  for (const file of list) {
+    if (ai.files.length >= 5) { toast('Attach up to 5 files at a time', true); break; }
+    const name = file.name || 'photo.jpg';
+    try {
+      if (file.type.startsWith('image/')) {
+        ai.files.push({ name, kind: 'image', media_type: 'image/jpeg', data: await shrinkImage(file) });
+      } else if (file.type === 'application/pdf' || /\.pdf$/i.test(name)) {
+        if (file.size > 15e6) throw new Error(`${name} is over 15 MB`);
+        ai.files.push({ name, kind: 'pdf', media_type: 'application/pdf', data: await fileBase64(file) });
+      } else if (/\.(csv|tsv|txt)$/i.test(name) || file.type.startsWith('text/')) {
+        if (file.size > 3e5) throw new Error(`${name} is too big; split it into smaller files`);
+        ai.files.push({ name, kind: 'text', text: await file.text() });
+      } else if (/\.xlsx?$/i.test(name)) {
+        throw new Error('Save Excel files as CSV first (File → Save As → CSV)');
+      } else {
+        throw new Error(`${name} isn’t a photo, PDF or CSV`);
+      }
+    } catch (err) { toast(err.message, true); }
+  }
+  renderAiFiles();
+}
+
+function fileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]);
+    reader.onerror = () => reject(new Error(`Couldn’t read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function shrinkImage(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error(`Couldn’t read ${file.name}`));
+      el.src = url;
+    });
+    const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function renderAiFiles() {
+  const box = $('#ai-files');
+  box.hidden = !ai.files.length;
+  box.innerHTML = ai.files.map((f, i) => `<span class="ai-file"><span>📎 ${esc(f.name)}</span>
+    <button type="button" data-ai-unattach="${i}" aria-label="Remove ${esc(f.name)}">×</button></span>`).join('');
+}
+
+function autosizeAi() {
+  aiInput.style.height = 'auto';
+  aiInput.style.height = `${Math.min(aiInput.scrollHeight, 140)}px`;
+}
+
+$('#ai-tab').addEventListener('click', () => setAiOpen(true));
+$('#ai-close').addEventListener('click', () => setAiOpen(false));
+$('#ai-new').addEventListener('click', async () => {
+  if (ai.busy) return;
+  try {
+    await api('DELETE', '/api/assistant');
+    ai.messages = [];
+    ai.notice = '';
+    renderAi(true);
+    aiInput.focus();
+  } catch (err) { toast(err.message, true); }
+});
+$('#ai-form').addEventListener('submit', (evt) => { evt.preventDefault(); sendAi(aiInput.value); });
+aiInput.addEventListener('input', autosizeAi);
+aiInput.addEventListener('keydown', (evt) => {
+  if (evt.key === 'Enter' && !evt.shiftKey && !isPhone() && !evt.isComposing) {
+    evt.preventDefault();
+    sendAi(aiInput.value);
+  }
+});
+aiInput.addEventListener('paste', (evt) => {
+  const images = [...(evt.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+  if (images.length) { evt.preventDefault(); addAiFiles(images); }
+});
+$('#ai-file').addEventListener('change', (evt) => { addAiFiles([...evt.target.files]); evt.target.value = ''; });
+$('#ai-files').addEventListener('click', (evt) => {
+  const i = evt.target.closest('[data-ai-unattach]')?.dataset.aiUnattach;
+  if (i != null) { ai.files.splice(Number(i), 1); renderAiFiles(); }
+});
+aiLog.addEventListener('click', (evt) => {
+  const suggestion = evt.target.closest('[data-ai-suggest]')?.dataset.aiSuggest;
+  if (suggestion) {
+    if (/photo/.test(suggestion)) { $('#ai-file').click(); aiInput.value = 'Add the people on this card.'; }
+    else if (/paste a list/.test(suggestion)) { aiInput.value = 'Add these contacts:\n'; aiInput.focus(); }
+    else sendAi(suggestion);
+    autosizeAi();
+    return;
+  }
+  const goto = evt.target.closest('[data-goto]');
+  if (goto) {
+    evt.preventDefault();
+    const id = Number(goto.dataset.goto);
+    if (!state.nodes.has(id)) { toast('That record isn’t on the map yet. It may still be syncing.'); sync(); return; }
+    if (isPhone()) setAiOpen(false);
+    goToNode(id);
+    openNodePanel(id);
+  }
+});
 
 // ---------- start ----------
 

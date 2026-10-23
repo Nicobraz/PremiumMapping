@@ -54,6 +54,21 @@ Wingmate leads flow in automatically as companies, with their contacts as people
 - **Editing synced records:** synced companies, people and notes follow the same rules as everything else (the owning rep or an admin edits; anyone can tag or add notes). If someone deletes a synced company, person or note here, the sync won't bring it back.
 - **Syncing while asleep:** the free server sleeps after 15 idle minutes. To keep syncing around the clock, add the link under *Sync even when nobody has the site open* to a free scheduler such as cron-job.org, every 15 minutes.
 
+## Ask AI (built-in assistant)
+
+The **✦ Ask AI** tab on the right edge (on phones: More → Ask AI) opens a chat with Claude
+(Sonnet 5.5) inside PSS Connect. Reps can ask about any company or contact, tell it about a
+meeting, or attach a business-card photo, PDF or CSV, and it updates PSS Connect as them, with
+the same tools and rules as the connector below (no deleting; bulk adds show a preview first).
+Names in its answers link to the cards. Each rep's conversation is kept, so it follows them
+between phone and computer; *New chat* starts over.
+
+It runs on the team's Anthropic account, so reps don't need their own Claude or ChatGPT:
+an admin creates an API key at console.anthropic.com (with billing, and ideally a monthly spend
+limit) and pastes it in ⚙ → AI assistant (or sets `ANTHROPIC_API_KEY` in Render). The same
+section shows this month's questions and estimated cost per rep. Each rep can ask up to 150
+questions a day. Typical cost is a few cents per question.
+
 ## Claude and ChatGPT
 
 PSS Connect is also a connector (an MCP server) for Claude and ChatGPT, at
