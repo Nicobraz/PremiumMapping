@@ -1575,8 +1575,7 @@ async function mergeInto(keepId, otherId) {
 // stackable "Filter by" choices: values of one field are OR'd, fields are AND'd.
 
 const DIR_FIELDS = [
-  ['company', 'Company'], ['stage', 'Stage'], ['priority', 'Priority'], ['tag', 'Tag'],
-  ['city', 'City'], ['rep', 'Rep'], ['source', 'Source'],
+  ['company', 'Company'], ['priority', 'Priority'], ['tag', 'Tag'], ['city', 'City'], ['rep', 'Rep'],
 ];
 
 function dirValues(field, n) {
@@ -1585,12 +1584,10 @@ function dirValues(field, n) {
   const staff = isPerson ? [n] : peopleAt(n.id);
   switch (field) {
     case 'company': return company ? [company.name] : ['No company'];
-    case 'stage': return staff.map((p) => p.stage.trim() || 'No stage');
     case 'priority': return staff.some((p) => p.priority) ? ['High priority'] : ['Not high priority'];
     case 'tag': return company ? String(company.tags || '').split(',').map((t) => t.trim()).filter(Boolean) : [];
     case 'city': return [...new Set([cityOf(n), company ? cityOf(company) : ''].filter(Boolean))];
     case 'rep': return [n.owner_rep.trim() || 'Unassigned'];
-    case 'source': return [n.wingmate_id ? 'Wingmate' : 'PSS Connect'];
     default: return [];
   }
 }
