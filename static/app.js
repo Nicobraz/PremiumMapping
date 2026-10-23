@@ -546,20 +546,23 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && !s
 
 function buildLegend() {
   const rels = [...Object.entries(REL), [WORKS_AT, { label: 'Works at', color: NO_COMPANY }]];
-  $('#legend').innerHTML = rels.map(([key, r]) => `
+  // The phone layout shows the same chips inside the Filter menu.
+  $('#legend').innerHTML = $('#legend-mobile').innerHTML = rels.map(([key, r]) => `
     <button class="chip ${state.hiddenRels.has(key) ? 'off' : ''}" data-rel="${key}" title="Show or hide ${esc(r.label)}">
       <span class="swatch ${key === WORKS_AT || key === 'competitor' ? 'dashed' : ''}" style="background:${r.color};color:${r.color}"></span>${esc(r.label)}
     </button>`).join('');
 }
 
-$('#legend').addEventListener('click', (evt) => {
+function onLegendClick(evt) {
   const chip = evt.target.closest('[data-rel]');
   if (!chip) return;
   const rel = chip.dataset.rel;
   if (state.hiddenRels.has(rel)) state.hiddenRels.delete(rel); else state.hiddenRels.add(rel);
   buildLegend();
   applyFilters();
-});
+}
+$('#legend').addEventListener('click', onLegendClick);
+$('#legend-mobile').addEventListener('click', onLegendClick);
 
 // City is the part of Location before the first comma ("Dallas, TX" -> "Dallas").
 const cityOf = (n) => String(n.location || '').split(',')[0].trim();
@@ -690,6 +693,8 @@ function renderFilterSummary(matched) {
   $('#filter-count').hidden = !count;
   $('#filter-count').textContent = count;
   $('#btn-filter').classList.toggle('active', !!count);
+  $('#nav-filter-count').hidden = !count;
+  $('#nav-filter-count').textContent = count;
   const chips = [['city', 'City', state.cityFilter], ['tag', 'Tag', state.tagFilter], ['stage', 'Stage', state.stageFilter],
     ['priority', 'Priority', state.priorityFilter ? 'High' : ''], ['owner', 'Rep', state.ownerFilter]]
     .filter(([, , value]) => value)
@@ -750,11 +755,14 @@ const filterMenu = $('#filter-menu');
 function toggleFilterMenu(open) {
   filterMenu.hidden = !open;
   $('#btn-filter').setAttribute('aria-expanded', String(open));
+  syncNav();
 }
 $('#btn-filter').addEventListener('click', () => toggleFilterMenu(filterMenu.hidden));
 $('#btn-filter-done').addEventListener('click', () => toggleFilterMenu(false));
 document.addEventListener('click', (evt) => {
-  if (!filterMenu.hidden && !evt.target.closest('.filter-wrap')) toggleFilterMenu(false);
+  // Use the event path: a tapped chip may already be redrawn (detached) by now.
+  const inside = evt.composedPath().some((el) => el.classList?.contains('filter-wrap') || el.id === 'bottom-nav');
+  if (!filterMenu.hidden && !inside) toggleFilterMenu(false);
 });
 $('#filter-city').addEventListener('change', (evt) => setFilter('city', evt.target.value));
 $('#filter-tag').addEventListener('change', (evt) => setFilter('tag', evt.target.value));
@@ -972,6 +980,7 @@ function closePanel() {
   state.panelDirty = false;
   state.picker = null;
   cy.elements().unselect();
+  syncNav();
 }
 
 function showPanel(desc, html) {
@@ -981,6 +990,7 @@ function showPanel(desc, html) {
   panel.innerHTML = html;
   panel.hidden = false;
   panel.scrollTop = 0;
+  syncNav();
 }
 
 function panelHead(pill, pillClass, title) {
@@ -2378,6 +2388,71 @@ document.addEventListener('keydown', (evt) => {
   else if (state.panel) closePanel();
   else closeActivity();
 });
+
+// ---------- phone layout: bottom navigation ----------
+
+const sheets = { add: $('#sheet-add'), more: $('#sheet-more') };
+
+function closeSheets() {
+  Object.values(sheets).forEach((sheet) => { sheet.hidden = true; });
+  $('#sheet-backdrop').hidden = true;
+}
+
+function openSheet(name) {
+  const wasOpen = !sheets[name].hidden;
+  closeSheets();
+  toggleFilterMenu(false);
+  if (wasOpen) { syncNav(); return; }
+  $('[data-sheet="admin"]').hidden = !(state.isAdmin || state.adminConfigured);
+  sheets[name].hidden = false;
+  $('#sheet-backdrop').hidden = false;
+  syncNav(name);
+}
+
+// Highlights the tab for whatever is on screen.
+function syncNav(sheet) {
+  const nav = $('#bottom-nav');
+  if (!nav) return;
+  const current = sheet || (!filterMenu.hidden ? 'filter'
+    : state.panel?.kind === 'directory' ? 'contacts' : !$('#activity').hidden ? 'more' : 'map');
+  nav.querySelectorAll('[data-nav]').forEach((b) => b.classList.toggle('on', b.dataset.nav === current));
+}
+
+$('#bottom-nav').addEventListener('click', (evt) => {
+  const which = evt.target.closest('[data-nav]')?.dataset.nav;
+  if (!which) return;
+  if (which === 'map') {
+    closeSheets(); toggleFilterMenu(false); closeActivity(); closePanel();
+  } else if (which === 'contacts') {
+    closeSheets(); toggleFilterMenu(false);
+    if (state.panel?.kind === 'directory') closePanel(); else openDirectory();
+  } else if (which === 'filter') {
+    closeSheets(); toggleFilterMenu(filterMenu.hidden);
+  } else {
+    openSheet(which);
+  }
+});
+
+$('#sheet-backdrop').addEventListener('click', () => { closeSheets(); syncNav(); });
+
+document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('click', (evt) => {
+  const action = evt.target.closest('[data-sheet]')?.dataset.sheet;
+  if (!action) return;
+  closeSheets();
+  const click = (id) => $(id).click();
+  ({
+    'add-company': () => click('#btn-add-company'),
+    'add-person': () => click('#btn-add-person'),
+    connect: () => click('#btn-connect'),
+    activity: () => { click('#btn-activity'); syncNav('more'); },
+    data: () => click('#btn-data'),
+    admin: () => click('#btn-admin'),
+    fit: () => click('#btn-fit'),
+    layout: () => click('#btn-layout'),
+    signout: () => click('#me-chip'),
+  })[action]?.();
+  syncNav();
+}));
 
 // ---------- start ----------
 

@@ -34,6 +34,10 @@ email, and changes show up for everyone within a few seconds.
 - **Legend chips** show or hide relationship types. **Filter** (top bar) narrows the map and Directory by **city** (from Location), **tag** or **rep**; a company's tag or city also keeps its people in view. Company tags show under the company name on the map.
 - **Activity** shows who changed what. **Data** imports a contacts CSV and saves the map as a PNG. Admins also get **Export to CSV** (contacts or companies, everything or just what's showing) and **Backup / Restore**.
 
+## On a phone
+
+The site switches to a phone layout automatically: a slim header with search, and a bottom bar with **Map · Contacts · ＋ Add · Filter · More**. Cards and lists open full screen. To install it like an app, open the site in Safari (iPhone) or Chrome (Android) and choose **Share → Add to Home Screen** (iPhone) or **⋮ → Add to Home screen / Install app** (Android).
+
 ## Wingmate sync
 
 Wingmate leads flow in automatically as companies, with their contacts as people and lead comments as notes. The sync is one-way: nothing is sent back to Wingmate.

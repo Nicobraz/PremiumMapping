@@ -634,6 +634,12 @@ def index():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
+@app.route("/manifest.webmanifest")
+def manifest():
+    """Lets phones "Add to Home Screen" and open PSS Connect like an app."""
+    return send_from_directory(STATIC_DIR, "manifest.webmanifest", mimetype="application/manifest+json")
+
+
 @app.route("/healthz")
 def healthz():
     return "ok"

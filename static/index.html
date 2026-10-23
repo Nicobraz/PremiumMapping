@@ -2,9 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PSS Connect</title>
+<meta name="theme-color" content="#144579">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="PSS Connect">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/emblem.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="stylesheet" href="/static/styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
 </head>
@@ -37,6 +44,10 @@
         <label>Tag<select id="filter-tag"><option value="">All tags</option></select></label>
         <label>Stage<select id="filter-stage"><option value="">All stages</option></select></label>
         <label>Priority<select id="filter-priority"><option value="">Any contact</option><option value="high">High priority only</option></select></label>
+        <div class="filter-legend-mobile">
+          <span>Relationship types</span>
+          <div id="legend-mobile" class="legend"></div>
+        </div>
         <label>Rep<select id="filter-owner"><option value="">All reps</option></select></label>
         <div class="filter-actions">
           <button id="btn-clear-filters" type="button" class="btn btn-sm btn-ghost">Clear filters</button>
@@ -184,6 +195,29 @@
 <datalist id="tag-list"></datalist>
 <datalist id="stage-list"></datalist>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<!-- Phone layout: bottom navigation and its pop-up menus (hidden on wider screens). -->
+<nav id="bottom-nav" class="bottom-nav" aria-label="Main">
+  <button type="button" data-nav="map" class="on"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/></svg><span>Map</span></button>
+  <button type="button" data-nav="contacts"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14.2c2.4.2 4 1.8 4.5 4.8"/></svg><span>Contacts</span></button>
+  <button type="button" data-nav="add" class="nav-add" aria-label="Add"><span class="plus">+</span></button>
+  <button type="button" data-nav="filter"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span>Filter</span><b id="nav-filter-count" class="count-badge" hidden></b></button>
+  <button type="button" data-nav="more"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span>More</span></button>
+</nav>
+<div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+<div id="sheet-add" class="sheet" role="menu" hidden>
+  <button type="button" class="sheet-item" data-sheet="add-company">+ Company</button>
+  <button type="button" class="sheet-item" data-sheet="add-person">+ Person</button>
+  <button type="button" class="sheet-item" data-sheet="connect">Connect two contacts</button>
+</div>
+<div id="sheet-more" class="sheet" role="menu" hidden>
+  <button type="button" class="sheet-item" data-sheet="activity">Activity</button>
+  <button type="button" class="sheet-item" data-sheet="data">Data, import &amp; export</button>
+  <button type="button" class="sheet-item" data-sheet="admin">Admin settings</button>
+  <button type="button" class="sheet-item" data-sheet="fit">Fit map to screen</button>
+  <button type="button" class="sheet-item" data-sheet="layout">Auto-arrange map</button>
+  <button type="button" class="sheet-item danger" data-sheet="signout">Sign out</button>
+</div>
 
 <script src="/static/app.js"></script>
 </body>
