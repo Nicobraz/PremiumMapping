@@ -146,12 +146,13 @@
     </div>
   </section>
   <section id="backup-section" hidden>
-    <h3>Backup <span class="pill pill-company">Admin</span></h3>
-    <p>Download everything as one file to keep somewhere safe. Restoring replaces the whole map.</p>
+    <h3>Backups <span class="pill pill-company">Admin</span></h3>
+    <p>A full copy is saved automatically every night (last 30 kept), and before any restore. Restoring replaces the whole map for everyone.</p>
     <div class="row-btns">
-      <a class="btn" href="/api/export.json" download>Download backup</a>
-      <label id="restore-label" class="btn btn-danger-ghost file-btn">Restore backup…<input id="restore-file" type="file" accept=".json,application/json" hidden></label>
+      <button id="btn-backup-now" type="button" class="btn">Back up now</button>
+      <label id="restore-label" class="btn btn-danger-ghost file-btn">Restore from a file…<input id="restore-file" type="file" accept=".json,application/json" hidden></label>
     </div>
+    <ul id="backup-list" class="backup-list"></ul>
   </section>
   <section>
     <h3>Picture</h3>

@@ -780,3 +780,10 @@ button, a, label, select, .chip, .conn-list li, .tag-option { touch-action: mani
   .panel, .filter-menu, .sheet { overflow-x: hidden; touch-action: pan-y; }
   .topbar, .filterbar, .bottom-nav { touch-action: none; }
 }
+
+/* ---------- backups ---------- */
+.backup-list { list-style: none; margin: 10px 0 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.backup-list li { display: flex; align-items: center; gap: 6px; padding: 8px 0; border-top: 1px solid var(--border); }
+.backup-list .who { flex: 1; min-width: 0; }
+.backup-list .who b { display: block; font-size: 13px; }
+.backup-list .who span { display: block; font-size: 12px; color: var(--muted); }

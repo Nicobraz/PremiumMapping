@@ -112,6 +112,13 @@ CREATE TABLE IF NOT EXISTS wingmate_aliases (
     node_id  INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     seen     TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS backups (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at  TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    size        INTEGER NOT NULL DEFAULT 0,
+    data        TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
@@ -239,6 +246,8 @@ def _init_schema(db):
     db.execute("INSERT INTO meta (key, value) VALUES ('version', 0) ON CONFLICT (key) DO NOTHING")
     db.execute("INSERT INTO settings (key, value) VALUES ('session_secret', ?) ON CONFLICT (key) DO NOTHING",
                (secrets.token_hex(32),))
+    db.execute("INSERT INTO settings (key, value) VALUES ('backup_key', ?) ON CONFLICT (key) DO NOTHING",
+               (secrets.token_urlsafe(24),))
     secret = db.execute("SELECT value FROM settings WHERE key = 'session_secret'").fetchone()["value"]
     db.commit()
     return secret
@@ -615,7 +624,7 @@ def admin_only(view):
 
 
 OPEN_API = {"/api/me", "/api/login", "/api/logout", "/api/admin/me", "/api/admin/login", "/api/admin/logout",
-            "/api/wingmate/cron"}  # the cron link checks its own key
+            "/api/wingmate/cron", "/api/backup/nightly.json"}  # these links check their own keys
 
 
 @app.before_request
@@ -1313,20 +1322,34 @@ def export_json():
 
 @app.post("/api/import.json")
 def import_json():
-    """Restores a backup, replacing the whole map."""
+    """Restores an uploaded backup file, replacing the whole map."""
     if not is_admin():
         return bad("Only an admin can restore a backup.", 403)
-    data = request.get_json(silent=True)
+    db = get_db()
+    try:
+        save_backup(db, "before-restore")  # so a restore can always be undone
+        counts = restore_snapshot(db, request.get_json(silent=True))
+    except ValueError as e:
+        db.conn.rollback()
+        return bad(str(e))
+    log(db, "restore", f"Restored a backup file ({counts['nodes']} records, {counts['edges']} connections)")
+    bump_version(db)
+    db.commit()
+    return jsonify(counts)
+
+
+def restore_snapshot(db, data):
+    """Replaces the map with a backup's contents. Raises ValueError for a bad backup.
+    Settings, the Wingmate connection and passwords are left as they are."""
     if not isinstance(data, dict) or not isinstance(data.get("nodes"), list) \
             or not isinstance(data.get("edges"), list):
-        return bad("That file doesn't look like a PSS Connect backup")
+        raise ValueError("That file doesn't look like a PSS Connect backup")
     nodes = [n for n in data["nodes"] if isinstance(n, dict)]
     edges = [e for e in data["edges"] if isinstance(e, dict)]
     node_types = {to_int(n.get("id")): n.get("type") for n in nodes}
     if None in node_types or any(t not in NODE_TYPES for t in node_types.values()):
-        return bad("Backup has invalid nodes")
+        raise ValueError("Backup has invalid records")
 
-    db = get_db()
     ts = now()
     db.execute("DELETE FROM notes")
     if isinstance(data.get("reps"), list):
@@ -1391,10 +1414,116 @@ def import_json():
         for table in ("nodes", "edges"):
             db.execute(f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
                        f"COALESCE(MAX(id), 0) + 1, false) FROM {table}")
-    log(db, "restore", f"Restored backup ({len(nodes)} nodes, {restored_edges} connections)")
+    return {"nodes": len(nodes), "edges": restored_edges}
+
+
+# ---------- backups ----------
+# A full copy of the map is kept in the database every night (30 days), plus one
+# before every restore. A keyed link lets an outside scheduler (GitHub Actions)
+# trigger the nightly copy and store it off-site too.
+
+BACKUP_KEEP = {"nightly": 30, "manual": 20, "before-restore": 10}
+NIGHTLY_EVERY_SECS = 23 * 3600
+
+
+def backup_payload(db):
+    return {"app": "pss-connect", "exported_at": now(), "version": current_version(db), **snapshot(db)}
+
+
+def save_backup(db, kind):
+    data = json.dumps(backup_payload(db), separators=(",", ":"))
+    backup_id = db.insert("backups", {"created_at": now(), "kind": kind, "size": len(data), "data": data})
+    keep = BACKUP_KEEP.get(kind, 10)
+    old = db.execute("SELECT id FROM backups WHERE kind = ? ORDER BY id DESC", (kind,)).fetchall()[keep:]
+    for row in old:
+        db.execute("DELETE FROM backups WHERE id = ?", (row["id"],))
+    return backup_id
+
+
+def nightly_due(db):
+    row = db.execute("SELECT created_at FROM backups WHERE kind = 'nightly' ORDER BY id DESC LIMIT 1").fetchone()
+    if not row:
+        return True
+    last = datetime.fromisoformat(row["created_at"])
+    return (datetime.now(timezone.utc) - last).total_seconds() > NIGHTLY_EVERY_SECS
+
+
+def _backup_loop():
+    """Saves the nightly copy whenever the server is awake and one is due."""
+    time.sleep(60)
+    while True:
+        try:
+            with app.app_context():
+                db = get_db()
+                if nightly_due(db):
+                    save_backup(db, "nightly")
+                    db.commit()
+        except Exception:
+            app.logger.exception("Nightly backup failed")
+        time.sleep(3600)
+
+
+@app.get("/api/backups")
+@admin_only
+def list_backups():
+    db = get_db()
+    rows = [dict(r) for r in db.execute("SELECT id, created_at, kind, size FROM backups ORDER BY id DESC")]
+    key = get_setting(db, "backup_key")
+    return jsonify({"backups": rows,
+                    "offsite_url": f"{request.host_url}api/backup/nightly.json?key={key}" if key else ""})
+
+
+@app.post("/api/backups")
+@admin_only
+def backup_now():
+    db = get_db()
+    backup_id = save_backup(db, "manual")
+    log(db, "backup", "Saved a backup")
+    db.commit()
+    return jsonify({"id": backup_id}), 201
+
+
+@app.get("/api/backups/<int:backup_id>.json")
+@admin_only
+def download_backup(backup_id):
+    row = get_db().execute("SELECT created_at, data FROM backups WHERE id = ?", (backup_id,)).fetchone()
+    if not row:
+        return bad("Not found", 404)
+    return Response(row["data"], mimetype="application/json", headers={
+        "Content-Disposition": f'attachment; filename="pss-connect-backup-{row["created_at"][:10]}.json"'})
+
+
+@app.post("/api/backups/<int:backup_id>/restore")
+@admin_only
+def restore_backup(backup_id):
+    db = get_db()
+    row = db.execute("SELECT created_at, data FROM backups WHERE id = ?", (backup_id,)).fetchone()
+    if not row:
+        return bad("Not found", 404)
+    try:
+        save_backup(db, "before-restore")
+        counts = restore_snapshot(db, json.loads(row["data"]))
+    except ValueError as e:
+        db.conn.rollback()
+        return bad(str(e))
+    log(db, "restore", f"Restored the backup from {row['created_at'][:16].replace('T', ' ')} UTC")
     bump_version(db)
     db.commit()
-    return jsonify({"nodes": len(nodes), "edges": restored_edges})
+    return jsonify(counts)
+
+
+@app.get("/api/backup/nightly.json")
+def offsite_backup():
+    """For the off-site copy: saves tonight's backup if it's due and returns the newest one."""
+    db = get_db()
+    key = get_setting(db, "backup_key")
+    if not key or not hmac.compare_digest(request.args.get("key", ""), key):
+        return bad("Not found", 404)
+    if nightly_due(db):
+        save_backup(db, "nightly")
+        db.commit()
+    row = db.execute("SELECT data FROM backups WHERE kind = 'nightly' ORDER BY id DESC LIMIT 1").fetchone()
+    return Response(row["data"], mimetype="application/json")
 
 
 @app.post("/api/import.csv")
@@ -1622,6 +1751,8 @@ app.secret_key = os.environ.get("SECRET_KEY") or init_db()
 _CLI_COMMANDS = ("add-admin", "set-admin-password")
 if os.environ.get("WINGMATE_AUTOSYNC", "1") == "1" and sys.argv[1:2] not in [[c] for c in _CLI_COMMANDS]:
     threading.Thread(target=_wingmate_loop, daemon=True, name="wingmate-loop").start()
+if os.environ.get("BACKUP_AUTOSAVE", "1") == "1" and sys.argv[1:2] not in [[c] for c in _CLI_COMMANDS]:
+    threading.Thread(target=_backup_loop, daemon=True, name="backup-loop").start()
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["add-admin"]:

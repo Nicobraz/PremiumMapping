@@ -78,8 +78,10 @@ Neon also sleeps when idle, and that's fine because the data stays put.
 
 ## Backups
 
-Download a backup regularly from **Data → Download backup**, or fetch
-`/api/export.json`. **Restore backup** replaces the whole map with the file's contents.
+- **Nightly copies:** a full copy of the map (companies, contacts, notes, connections, tags, reps) is saved in the database every night, and the last 30 are kept. A copy is also saved before every restore.
+- **Data → Backups** (admin): **Back up now**, download any copy, or **Restore** one. Restoring replaces the whole map, but the current map is saved first, so a restore can be undone from the same list.
+- **Off-site:** a private GitHub repository (`pss-connect-backups`) downloads the nightly copy every night and keeps 90 days, in case the database itself is ever lost.
+- Backups never contain passwords or the Wingmate token.
 
 ## Configuration
 

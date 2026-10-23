@@ -2306,6 +2306,7 @@ function openDataDialog() {
   $('#backup-section').hidden = !state.isAdmin;
   $('#export-section').hidden = !state.isAdmin;
   $('#restore-label').hidden = !state.isAdmin;
+  if (state.isAdmin) loadBackups();
   $('#csv-owner-note').hidden = state.isAdmin;
   dataDialog.showModal();
 }
@@ -2370,6 +2371,50 @@ $('#csv-file').addEventListener('change', async (evt) => {
   } catch (err) { toast(err.message, true); }
 });
 
+const BACKUP_KINDS = { nightly: 'Nightly', manual: 'Saved by hand', 'before-restore': 'Before a restore' };
+
+async function loadBackups() {
+  const list = $('#backup-list');
+  list.innerHTML = '<li class="muted">Loading…</li>';
+  try {
+    const { backups } = await api('GET', '/api/backups');
+    list.innerHTML = backups.length ? backups.slice(0, 40).map((b) => `<li>
+        <span class="who"><b>${esc(new Date(b.created_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }))}</b>
+          <span>${esc(BACKUP_KINDS[b.kind] || b.kind)} · ${Math.max(1, Math.round(b.size / 1024))} KB</span></span>
+        <a class="btn btn-sm btn-ghost" href="/api/backups/${b.id}.json" download>Download</a>
+        <button type="button" class="btn btn-sm btn-danger-ghost" data-restore-backup="${b.id}">Restore</button>
+      </li>`).join('') : '<li class="muted">No backups yet. The first nightly copy is saved within the hour.</li>';
+  } catch (err) {
+    list.innerHTML = `<li class="muted">${esc(err.message)}</li>`;
+  }
+}
+
+async function afterRestore(r) {
+  dataDialog.close();
+  closePanel();
+  state.firstLoad = true;
+  await sync();
+  toast(`Restored ${r.nodes} records and ${r.edges} connections`);
+}
+
+$('#btn-backup-now').addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/backups');
+    await loadBackups();
+    toast('Backup saved');
+  } catch (err) { toast(err.message, true); }
+});
+
+$('#backup-list').addEventListener('click', async (evt) => {
+  const btn = evt.target.closest('[data-restore-backup]');
+  if (!btn) return;
+  const when = btn.closest('li').querySelector('b').textContent;
+  if (!confirm(`Restore the backup from ${when}?\n\nThis replaces the ENTIRE map for everyone with that copy. The current map is saved first, so you can undo it from this list.`)) return;
+  try {
+    await afterRestore(await api('POST', `/api/backups/${btn.dataset.restoreBackup}/restore`));
+  } catch (err) { toast(err.message, true); }
+});
+
 $('#restore-file').addEventListener('change', async (evt) => {
   const file = evt.target.files[0];
   evt.target.value = '';
@@ -2378,12 +2423,7 @@ $('#restore-file').addEventListener('change', async (evt) => {
   try { data = JSON.parse(await file.text()); } catch { toast('That file isn\'t valid JSON', true); return; }
   if (!confirm('Restoring replaces the ENTIRE map for everyone with this backup. Continue?')) return;
   try {
-    const r = await api('POST', '/api/import.json', data);
-    dataDialog.close();
-    closePanel();
-    state.firstLoad = true;
-    await sync();
-    toast(`Restored ${r.nodes} records and ${r.edges} connections`);
+    await afterRestore(await api('POST', '/api/import.json', data));
   } catch (err) { toast(err.message, true); }
 });
 
