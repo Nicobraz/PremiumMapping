@@ -1,0 +1,22 @@
+name: Keep PSS Connect awake (work hours)
+
+# Opens the Wingmate sync link every 15 minutes from about 6am to 9pm Mountain
+# time. That keeps the free Render server awake (no slow first load) and pulls in
+# new Wingmate leads. It sleeps overnight to stay within Render's free hours.
+on:
+  schedule:
+    - cron: "*/15 12-23 * * *"
+    - cron: "*/15 0-2 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake the site and sync Wingmate
+        env:
+          SYNC_URL: ${{ secrets.WINGMATE_CRON_URL }}
+        run: curl -fsS --max-time 120 --retry 3 --retry-delay 20 --retry-all-errors -X POST "$SYNC_URL"
