@@ -885,3 +885,6 @@ body.ai-open { padding-right: 420px; }
   .ai-file span { max-width: 150px; }
 }
 .ai-usage { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: var(--muted); }
+.wm-icon { display: inline-block; }
+#btn-wm-sync.busy .wm-icon { animation: spin .9s linear infinite; }
+@media (max-width: 720px) { #btn-wm-sync { display: none; } }

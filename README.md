@@ -44,6 +44,7 @@ The site switches to a phone layout built for looking things up and adding conta
 Wingmate leads flow in automatically as companies, with their contacts as people and lead comments as notes. The sync is one-way: nothing is sent back to Wingmate.
 
 - **Setup (admin):** ⚙ → **Wingmate**. Paste the Pipeline API token (Wingmate article *Retrieving your Pipeline API Access Token*, which needs the API Access & Integrations add-on) and the campaign/pipeline ID. Then click **Connect**, **Preview** to see what would change, and **Sync now**. After that it runs every 15 minutes while the site is awake.
+- **Sync now (any rep):** the **↻ Wingmate** button in the top bar (on phones: More → Sync with Wingmate) brings in what was just added in Wingmate without waiting for the 15-minute sync. If a sync finished in the last minute it just says you're up to date.
 - **Mapping:**
   - lead → company (name, city/state from the address; address and description go in About)
   - contact → person at that company (email, phone, title, notes)

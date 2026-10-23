@@ -1936,6 +1936,40 @@ def wingmate_cron():
     return jsonify({"started": start_wingmate_sync()}), 202
 
 
+# Any signed-in rep can pull in what's new in Wingmate right away instead of waiting for
+# the 15-minute sync. A sync that finished in the last minute counts as fresh.
+REFRESH_COOLDOWN_SECS = 60
+
+
+def wingmate_refresh_status(db):
+    last = get_setting(db, "wingmate_last_result")
+    return {"connected": wingmate_client(db) is not None, "running": _wingmate_state["running"] == "sync",
+            "last": json.loads(last) if last else None}
+
+
+@app.get("/api/wingmate/refresh")
+def get_wingmate_refresh():
+    return jsonify(wingmate_refresh_status(get_db()))
+
+
+@app.post("/api/wingmate/refresh")
+def wingmate_refresh():
+    db = get_db()
+    status = wingmate_refresh_status(db)
+    if not status["connected"]:
+        return bad("Wingmate isn't connected yet. Ask an admin to connect it in \u2699.")
+    last = status["last"] or {}
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(last["at"])).total_seconds() if last.get("ok") else None
+    except (KeyError, TypeError, ValueError):
+        age = None
+    if status["running"] or (age is not None and age < REFRESH_COOLDOWN_SECS):
+        return jsonify({**status, "started": False})
+    if not start_wingmate_sync():
+        return jsonify({**status, "started": False, "busy": True})
+    return jsonify({**status, "started": True, "running": True}), 202
+
+
 app.secret_key = os.environ.get("SECRET_KEY") or init_db()
 connector.install(app, sys.modules[__name__])  # Claude / ChatGPT connector at /mcp
 assistant.install(app, sys.modules[__name__])  # the in-app "Ask AI" side panel

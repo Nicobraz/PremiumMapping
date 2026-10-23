@@ -143,6 +143,7 @@ async function loadMe() {
   }
   showSignIn(false);
   sync();
+  loadWmSync();
 }
 
 $('#signin-form').addEventListener('submit', async (evt) => {
@@ -2748,9 +2749,66 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
     layout: () => click('#btn-layout'),
     signout: () => click('#me-chip'),
     ai: () => setAiOpen(true),
+    'wm-sync': () => refreshWingmate(),
   })[action]?.();
   if (action !== 'filter' && action !== 'activity') syncNav();
 }));
+
+// ---------- Wingmate refresh (any rep) ----------
+// Pulls in what reps just added in Wingmate instead of waiting for the 15-minute sync.
+
+const wmSync = { connected: false, busy: false };
+
+async function loadWmSync() {
+  try { wmSync.connected = (await api('GET', '/api/wingmate/refresh')).connected; } catch { wmSync.connected = false; }
+  renderWmSync();
+}
+
+function renderWmSync() {
+  const btn = $('#btn-wm-sync');
+  btn.hidden = !wmSync.connected;
+  btn.disabled = wmSync.busy;
+  btn.classList.toggle('busy', wmSync.busy);
+  $('[data-sheet="wm-sync"]').hidden = !wmSync.connected;
+}
+
+function wingmateNews(r) {
+  const parts = [[r.people_added, 'new contact', 'new contacts'], [r.companies_added, 'new company', 'new companies'],
+    [r.notes_added, 'new note', 'new notes'], [(r.people_updated || 0) + (r.companies_updated || 0), 'update', 'updates']]
+    .filter(([n]) => n).map(([n, one, many]) => plural(n, one, many));
+  return parts.length ? `Wingmate synced: ${parts.join(', ')}` : 'You’re up to date with Wingmate';
+}
+
+async function refreshWingmate() {
+  if (wmSync.busy) return;
+  wmSync.busy = true;
+  renderWmSync();
+  toast('Syncing with Wingmate…');
+  try {
+    const before = await api('POST', '/api/wingmate/refresh');
+    let status = before;
+    if (before.started || before.running) {
+      const startedFrom = before.last?.at;
+      const deadline = Date.now() + 3 * 60 * 1000;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        status = await api('GET', '/api/wingmate/refresh');
+      } while ((status.running || status.last?.at === startedFrom) && Date.now() < deadline);
+    }
+    await sync();
+    const last = status.last;
+    if (status.running) toast('Wingmate is still syncing. New records will appear shortly.');
+    else if (!last) toast('You’re up to date with Wingmate');
+    else if (!last.ok) toast(last.error || 'Wingmate sync failed', true);
+    else toast(before.started ? wingmateNews(last) : `You’re up to date with Wingmate (synced ${timeAgo(last.at)})`);
+  } catch (err) {
+    toast(err.message, true);
+  }
+  wmSync.busy = false;
+  renderWmSync();
+}
+
+$('#btn-wm-sync').addEventListener('click', refreshWingmate);
 
 // ---------- AI assistant (the "Ask AI" side panel) ----------
 // Chats with Claude through the server (/api/assistant), which works as the signed-in rep.
