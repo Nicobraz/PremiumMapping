@@ -773,3 +773,10 @@ button, a, label, select, .chip, .conn-list li, .tag-option { touch-action: mani
   body.typing .panel { bottom: 0; }
   body.typing .filter-menu, body.typing .sheet { bottom: 0; }
 }
+
+@media (max-width: 720px) {
+  /* Nothing but the map moves: no sideways drift, no bounce at the ends of a card. */
+  body * { overscroll-behavior: none; }
+  .panel, .filter-menu, .sheet { overflow-x: hidden; touch-action: pan-y; }
+  .topbar, .filterbar, .bottom-nav { touch-action: none; }
+}

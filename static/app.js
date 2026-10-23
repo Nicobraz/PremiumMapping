@@ -2429,6 +2429,15 @@ function isPhone() {
   return phoneQuery.matches;
 }
 
+// The screen itself never zooms or slides on a phone; only the map pans and zooms.
+// (iOS Safari ignores user-scalable=no, so its pinch gestures are stopped here.)
+['gesturestart', 'gesturechange'].forEach((type) => document.addEventListener(type, (evt) => {
+  if (isPhone() && !evt.target.closest?.('#cy')) evt.preventDefault();
+}, { passive: false }));
+document.addEventListener('touchmove', (evt) => {
+  if (isPhone() && evt.touches.length > 1 && !evt.target.closest?.('#cy')) evt.preventDefault();
+}, { passive: false });
+
 // While typing on a phone the keyboard would shove the bottom bar up over the screen:
 // hide it until the field loses focus.
 document.addEventListener('focusin', (evt) => {
