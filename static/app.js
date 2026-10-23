@@ -38,11 +38,14 @@ const state = {
   signedOut: false,
   adminConfigured: false,
   editRepId: null,
-  dirTab: 'companies',
+  dirTab: 'people',
   dirQuery: '',
   focusId: null,
   hiddenRels: new Set(),
   ownerFilter: '',
+  priorityFilter: '',
+  colorPickerFor: null,
+  dirFilters: [],       // [{ field, value }] in the Contacts list
   stageFilter: '',
   view: storeGet('pss.view') || 'team',  // 'team', 'mine' or (admins) a rep's name
   viewSets: null,       // { visible, context } node ids when a rep view is on
@@ -82,9 +85,15 @@ function timeAgo(iso) {
 function companyColor(companyId) {
   return companyId == null ? NO_COMPANY : PALETTE[companyId % PALETTE.length];
 }
+// A card's own color wins; contacts otherwise follow their company's color.
 function nodeColor(n) {
-  return n.type === 'company' ? companyColor(n.id) : companyColor(n.company_id);
+  if (n.color) return n.color;
+  if (n.type === 'company') return companyColor(n.id);
+  const company = n.company_id != null ? state.nodes.get(n.company_id) : null;
+  return company?.color || companyColor(n.company_id);
 }
+
+const CARD_COLORS = ['#e73235', '#144579', ...PALETTE, '#64748b'];
 
 // ---------- identity ----------
 
@@ -231,6 +240,7 @@ function graphStyle() {
     } },
     { selector: 'edge[rel="competitor"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [7, 4] } },
     { selector: 'edge.hover, edge:selected', style: { 'label': 'data(label)', 'opacity': 1, 'z-index': 10 } },
+    { selector: 'node[priority = 1]', style: { 'border-width': 4, 'border-color': '#f5b301' } },
     { selector: 'node:selected', style: { 'border-width': 4, 'border-color': accent } },
     { selector: 'node.match', style: { 'border-width': 4, 'border-color': '#f59e0b' } },
     { selector: 'node.connect-from', style: { 'border-width': 4, 'border-color': accent, 'border-style': 'dashed' } },
@@ -254,10 +264,11 @@ const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 darkQuery.addEventListener?.('change', () => cy.style(graphStyle()));
 
 function nodeElement(n) {
-  const label = n.type === 'person' && n.title ? `${n.name}\n${n.title}` : n.name;
+  const name = n.priority ? `★ ${n.name}` : n.name;
+  const label = n.type === 'person' && n.title ? `${name}\n${n.title}` : name;
   return {
     group: 'nodes',
-    data: { id: `n${n.id}`, nid: n.id, kind: n.type, label, color: nodeColor(n) },
+    data: { id: `n${n.id}`, nid: n.id, kind: n.type, label, color: nodeColor(n), priority: n.priority ? 1 : 0 },
     position: hasPos(n) ? { x: n.x, y: n.y } : undefined,
   };
 }
@@ -554,7 +565,7 @@ $('#legend').addEventListener('click', (evt) => {
 const cityOf = (n) => String(n.location || '').split(',')[0].trim();
 
 function activeFilterCount() {
-  return [state.cityFilter, state.tagFilter, state.ownerFilter, state.stageFilter].filter(Boolean).length;
+  return [state.cityFilter, state.tagFilter, state.ownerFilter, state.stageFilter, state.priorityFilter].filter(Boolean).length;
 }
 
 // A person also matches through their company (and a company through its
@@ -575,6 +586,7 @@ function filterMatches() {
     if (city && !(cityOk(n) || (company && cityOk(company)) || (n.type === 'company' && peopleAt(n.id).some(cityOk)))) continue;
     // Stage lives on contacts; a company matches through its contacts.
     if (stage && !(n.type === 'person' ? stageOk(n) : peopleAt(n.id).some((p) => inView(p.id) && stageOk(p)))) continue;
+    if (state.priorityFilter && !(n.type === 'person' ? n.priority : peopleAt(n.id).some((p) => inView(p.id) && p.priority))) continue;
     matched.add(n.id);
   }
   return matched;
@@ -679,7 +691,7 @@ function renderFilterSummary(matched) {
   $('#filter-count').textContent = count;
   $('#btn-filter').classList.toggle('active', !!count);
   const chips = [['city', 'City', state.cityFilter], ['tag', 'Tag', state.tagFilter], ['stage', 'Stage', state.stageFilter],
-    ['owner', 'Rep', state.ownerFilter]]
+    ['priority', 'Priority', state.priorityFilter ? 'High' : ''], ['owner', 'Rep', state.ownerFilter]]
     .filter(([, , value]) => value)
     .map(([key, label, value]) => `<button type="button" class="filter-chip" data-clear="${key}" title="Remove this filter">${label}: <b>${esc(value)}</b> ×</button>`);
   if (matched) chips.push(`<span class="muted">${plural(matched.size, 'match', 'matches')}</span>`);
@@ -748,11 +760,14 @@ $('#filter-city').addEventListener('change', (evt) => setFilter('city', evt.targ
 $('#filter-tag').addEventListener('change', (evt) => setFilter('tag', evt.target.value));
 $('#filter-owner').addEventListener('change', (evt) => setFilter('owner', evt.target.value));
 $('#filter-stage').addEventListener('change', (evt) => setFilter('stage', evt.target.value));
+$('#filter-priority').addEventListener('change', (evt) => setFilter('priority', evt.target.value));
 $('#btn-clear-filters').addEventListener('click', () => {
   state.cityFilter = '';
   state.tagFilter = '';
   state.ownerFilter = '';
   state.stageFilter = '';
+  state.priorityFilter = '';
+  $('#filter-priority').value = '';
   refreshFilterOptions();
   setFilter('city', '');
 });
@@ -1041,11 +1056,19 @@ function actionsHtml(n) {
   if (n.email) btns.push(`<a class="btn btn-sm" href="mailto:${esc(n.email)}">Email</a>`);
   if (n.phone) btns.push(`<a class="btn btn-sm" href="tel:${esc(n.phone.replace(/[^\d+]/g, ''))}">Call</a>`);
   btns.push('<button class="btn btn-sm" data-act="show-map">Show on map</button>');
+  if (n.type === 'person') {
+    btns.push(`<button class="btn btn-sm ${n.priority ? 'btn-priority' : ''}" data-act="priority" aria-pressed="${!!n.priority}" title="Anyone can flag a contact as high priority">${n.priority ? '★ High priority' : '☆ Mark high priority'}</button>`);
+  }
+  btns.push(`<button class="btn btn-sm" data-act="color" title="Change this card's color (everyone sees it)"><span class="swatch-dot" style="background:${nodeColor(n)}"></span>Color</button>`);
   if (canEditNode(n)) btns.push('<button class="btn btn-sm" data-act="edit">Edit</button>');
   if (canEditNode(n) && n.type === 'person') btns.push('<button class="btn btn-sm" data-act="merge" title="Fold a duplicate of this contact into it">Merge…</button>');
   const viewOnly = canEditNode(n) ? ''
-    : `<div class="view-only">View only · ${n.owner_rep ? `assigned to ${esc(n.owner_rep)}` : 'unassigned'}. You can still add tags, notes and connections.</div>`;
-  return `<div class="card-actions">${btns.join('')}</div>${viewOnly}`;
+    : `<div class="view-only">View only · ${n.owner_rep ? `assigned to ${esc(n.owner_rep)}` : 'unassigned'}. You can still add tags, notes, connections, change its color${n.type === 'person' ? ' or flag it high priority' : ''}.</div>`;
+  const picker = state.colorPickerFor === n.id ? `<div class="color-picker" role="group" aria-label="Card color">
+      ${CARD_COLORS.map((c) => `<button type="button" class="color-swatch ${n.color === c ? 'on' : ''}" data-color="${c}" style="background:${c}" aria-label="Color ${c}"></button>`).join('')}
+      <button type="button" class="btn btn-sm btn-ghost" data-color="">${n.type === 'person' ? 'Use company color' : 'Default'}</button>
+    </div>` : '';
+  return `<div class="card-actions">${btns.join('')}</div>${picker}${viewOnly}`;
 }
 
 // Anyone can add or remove a company's tags (not just its owner); new tags
@@ -1139,7 +1162,9 @@ function aboutHtml(n) {
 }
 
 function stageBadge(n) {
-  return n && n.type === 'person' && n.stage ? ` <span class="stage-chip" title="Pipeline stage">${esc(n.stage)}</span>` : '';
+  if (!n || n.type !== 'person') return '';
+  return (n.priority ? ' <span class="priority-star" title="High priority">★</span>' : '')
+    + (n.stage ? ` <span class="stage-chip" title="Pipeline stage">${esc(n.stage)}</span>` : '');
 }
 
 function connListHtml(rows, empty) {
@@ -1277,9 +1302,10 @@ function openNodePanel(id, opts = {}) {
   const n = state.nodes.get(id);
   if (!n) return;
   if (state.picker && state.picker.nodeId !== id) state.picker = null;
+  if (state.colorPickerFor !== id) state.colorPickerFor = null;
   cy.elements().unselect();
   cy.getElementById(`n${id}`).select();
-  const back = opts.fromDir ? '<button class="back-link" data-act="directory">← Directory</button>' : '';
+  const back = opts.fromDir ? '<button class="back-link" data-act="directory">← Contacts</button>' : '';
   showPanel({ kind: 'node', id, fromDir: !!opts.fromDir },
     back + (n.type === 'company' ? companyCardHtml(n) : personCardHtml(n)));
 }
@@ -1544,46 +1570,125 @@ async function mergeInto(keepId, otherId) {
   } catch (err) { toast(err.message, true); }
 }
 
-// ----- directory -----
+// ----- Contacts list -----
+// Everyone's contacts (and companies), whatever view the map is in, narrowed by
+// stackable "Filter by" choices: values of one field are OR'd, fields are AND'd.
+
+const DIR_FIELDS = [
+  ['company', 'Company'], ['stage', 'Stage'], ['priority', 'Priority'], ['tag', 'Tag'],
+  ['city', 'City'], ['rep', 'Rep'], ['source', 'Source'],
+];
+
+function dirValues(field, n) {
+  const isPerson = n.type === 'person';
+  const company = isPerson ? companyOf(n) : n;
+  const staff = isPerson ? [n] : peopleAt(n.id);
+  switch (field) {
+    case 'company': return company ? [company.name] : ['No company'];
+    case 'stage': return staff.map((p) => p.stage.trim() || 'No stage');
+    case 'priority': return staff.some((p) => p.priority) ? ['High priority'] : ['Not high priority'];
+    case 'tag': return company ? String(company.tags || '').split(',').map((t) => t.trim()).filter(Boolean) : [];
+    case 'city': return [...new Set([cityOf(n), company ? cityOf(company) : ''].filter(Boolean))];
+    case 'rep': return [n.owner_rep.trim() || 'Unassigned'];
+    case 'source': return [n.wingmate_id ? 'Wingmate' : 'PSS Connect'];
+    default: return [];
+  }
+}
+
+function dirItems() {
+  const type = state.dirTab === 'companies' ? 'company' : 'person';
+  return [...state.nodes.values()].filter((n) => n.type === type);
+}
+
+function dirMatches(n) {
+  const byField = new Map();
+  for (const f of state.dirFilters) {
+    if (!byField.has(f.field)) byField.set(f.field, new Set());
+    byField.get(f.field).add(f.value.toLowerCase());
+  }
+  for (const [field, wanted] of byField) {
+    if (!dirValues(field, n).some((v) => wanted.has(v.toLowerCase()))) return false;
+  }
+  return true;
+}
 
 function openDirectory(tab) {
-  if (tab) state.dirTab = tab;
+  if (tab && tab !== state.dirTab) { state.dirTab = tab; state.dirFilters = []; }
+  if (state.dirTab !== 'companies') state.dirTab = 'people';
   showPanel({ kind: 'directory' }, `<div class="panel-head">
-      <h2>Directory</h2>
+      <h2>Contacts</h2>
       <button class="icon-btn" data-act="close" aria-label="Close">×</button>
     </div>
     <div class="dir-controls">
       <div class="tabs-seg" role="tablist">
-        ${['companies', 'people'].map((t) => `<button type="button" role="tab" aria-selected="${state.dirTab === t}" class="${state.dirTab === t ? 'on' : ''}" data-dir-tab="${t}">${t === 'companies' ? 'Companies' : 'People'}</button>`).join('')}
+        ${[['people', 'Contacts'], ['companies', 'Companies']].map(([t, label]) => `<button type="button" role="tab" aria-selected="${state.dirTab === t}" class="${state.dirTab === t ? 'on' : ''}" data-dir-tab="${t}">${label}</button>`).join('')}
       </div>
-      <input id="dir-filter" type="search" placeholder="Filter by name, title, location, tag…" value="${esc(state.dirQuery)}" data-nodirty autocomplete="off">
+      <div class="dir-add">
+        <span>Filter by</span>
+        <select id="dir-field" aria-label="Filter by">
+          <option value="">Choose…</option>
+          ${DIR_FIELDS.map(([key, label]) => `<option value="${key}">${label}</option>`).join('')}
+        </select>
+        <select id="dir-value" aria-label="Filter value" disabled><option value="">—</option></select>
+      </div>
+      <div id="dir-chips" class="dir-chips"></div>
     </div>
     <ul id="dir-list" class="conn-list dir-list"></ul>`);
   renderDirectoryList();
 }
 
+function fillDirValues() {
+  const field = $('#dir-field')?.value;
+  const select = $('#dir-value');
+  if (!select) return;
+  if (!field) { select.innerHTML = '<option value="">—</option>'; select.disabled = true; return; }
+  const counts = new Map();
+  for (const n of dirItems()) {
+    for (const v of new Set(dirValues(field, n))) {
+      const entry = counts.get(v.toLowerCase()) || { v, n: 0 };
+      entry.n += 1;
+      counts.set(v.toLowerCase(), entry);
+    }
+  }
+  const taken = new Set(state.dirFilters.filter((f) => f.field === field).map((f) => f.value.toLowerCase()));
+  const options = [...counts.values()].filter((x) => !taken.has(x.v.toLowerCase()))
+    .sort((a, b) => a.v.localeCompare(b.v));
+  select.innerHTML = `<option value="">${options.length ? 'Pick one…' : 'Nothing else to pick'}</option>`
+    + options.map((x) => `<option value="${esc(x.v)}">${esc(x.v)} (${x.n})</option>`).join('');
+  select.disabled = !options.length;
+}
+
 function renderDirectoryList() {
   const list = $('#dir-list');
   if (!list) return;
-  const q = state.dirQuery.trim().toLowerCase();
-  const filtered = activeFilterCount() ? filterMatches() : null;
-  const viewOk = (n) => inView(n.id);
-  const matches = (n) => viewOk(n) && (!filtered || filtered.has(n.id)) && (!q || [n.name, n.title, n.location, n.tags, n.owner_rep, companyOf(n)?.name]
-    .some((v) => String(v || '').toLowerCase().includes(q)));
+  const label = Object.fromEntries(DIR_FIELDS);
+  $('#dir-chips').innerHTML = state.dirFilters.map((f, i) =>
+    `<button type="button" class="filter-chip" data-dir-remove="${i}" title="Remove this filter">${esc(label[f.field])}: <b>${esc(f.value)}</b> ×</button>`).join('')
+    + (state.dirFilters.length > 1 ? '<button type="button" class="link-btn" data-dir-clear>Clear all</button>' : '');
+  const items = dirItems().filter(dirMatches).sort(byName);
+  const kind = state.dirTab === 'companies' ? ['company', 'companies'] : ['contact', 'contacts'];
+  const countLine = `<li class="dir-count muted">${plural(items.length, kind[0], kind[1])}${state.dirFilters.length ? ' match' : ''}</li>`;
   if (state.dirTab === 'companies') {
-    const items = [...state.nodes.values()].filter((n) => n.type === 'company' && matches(n)).sort(byName);
-    list.innerHTML = items.length ? items.map((c) => {
-      const detail = [plural(peopleAt(c.id).length, 'person', 'people'), c.location].filter(Boolean).join(' · ');
+    list.innerHTML = countLine + (items.length ? items.map((c) => {
+      const detail = [plural(peopleAt(c.id).length, 'contact', 'contacts'), c.location, c.owner_rep].filter(Boolean).join(' · ');
       return `<li data-goto="${c.id}">${avatar(c, 'avatar-sm')}<span class="who"><b>${esc(c.name)}</b><span>${esc(detail)}</span>${tagChipsHtml(c)}</span></li>`;
-    }).join('') : '<li class="muted">No companies match.</li>';
+    }).join('') : '<li class="muted">No companies match.</li>');
   } else {
-    const items = [...state.nodes.values()].filter((n) => n.type === 'person' && matches(n)).sort(byName);
-    list.innerHTML = items.length ? items.map((p) => {
-      const detail = [p.title, companyOf(p)?.name].filter(Boolean).join(' · ');
-      return `<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}${detail ? `<span>${esc(detail)}</span>` : ''}</span></li>`;
-    }).join('') : '<li class="muted">No people match.</li>';
+    list.innerHTML = countLine + (items.length ? items.map((p) => {
+      const detail = [p.title, companyOf(p)?.name, p.owner_rep || 'Unassigned'].filter(Boolean).join(' · ');
+      return `<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}<span>${esc(detail)}</span></span></li>`;
+    }).join('') : '<li class="muted">No contacts match.</li>');
   }
+  fillDirValues();
 }
+
+panel.addEventListener('change', (evt) => {
+  if (evt.target.id === 'dir-field') fillDirValues();
+  if (evt.target.id === 'dir-value' && evt.target.value) {
+    state.dirFilters.push({ field: $('#dir-field').value, value: evt.target.value });
+    renderDirectoryList();
+  }
+});
 
 // Keep the open panel in step with remote changes without clobbering edits in progress.
 function refreshPanelAfterSync() {
@@ -1644,6 +1749,9 @@ panel.addEventListener('click', async (evt) => {
   if (wmBtn) { await handleWingmateAction(wmBtn.dataset.wmAct); return; }
   const repBtn = evt.target.closest('[data-rep-act]');
   if (repBtn) { await handleRepAction(repBtn.dataset.repAct, Number(repBtn.dataset.rep)); return; }
+  const dirRemove = evt.target.closest('[data-dir-remove]');
+  if (dirRemove) { state.dirFilters.splice(Number(dirRemove.dataset.dirRemove), 1); renderDirectoryList(); return; }
+  if (evt.target.closest('[data-dir-clear]')) { state.dirFilters = []; renderDirectoryList(); return; }
   const tab = evt.target.closest('[data-dir-tab]');
   if (tab) { openDirectory(tab.dataset.dirTab); return; }
 
@@ -1653,6 +1761,17 @@ panel.addEventListener('click', async (evt) => {
     try {
       await api('DELETE', `/api/notes/${delNote.dataset.delNote}`);
       state.panelDirty = false;
+      await sync();
+      rerenderCard();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
+
+  const swatch = evt.target.closest('[data-color]');
+  if (swatch) {
+    try {
+      await api('POST', `/api/nodes/${p.id}/display`, { color: swatch.dataset.color });
+      state.colorPickerFor = null;
       await sync();
       rerenderCard();
     } catch (err) { toast(err.message, true); }
@@ -1704,7 +1823,18 @@ panel.addEventListener('click', async (evt) => {
   else if (act === 'cancel-edit') openNodePanel(p.id);
   else if (act === 'show-map') focusOn(p.id);
   else if (act === 'add-person-here') openNewNodePanel('person', p.id);
-  else if (act === 'merge') openMergePanel(p.id);
+  else if (act === 'color') {
+    state.colorPickerFor = state.colorPickerFor === p.id ? null : p.id;
+    rerenderCard();
+  } else if (act === 'priority') {
+    const n = state.nodes.get(p.id);
+    try {
+      await api('POST', `/api/nodes/${p.id}/display`, { priority: !n.priority });
+      await sync();
+      rerenderCard();
+      toast(n.priority ? 'Removed high priority' : `${n.name} is now high priority`);
+    } catch (err) { toast(err.message, true); }
+  } else if (act === 'merge') openMergePanel(p.id);
   else if (act === 'cancel-merge') openNodePanel(p.id);
   else if (act === 'force-save') {
     const form = panel.querySelector('[data-form="node"]');

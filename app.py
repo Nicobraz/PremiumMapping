@@ -42,7 +42,7 @@ NODE_TYPES = ("company", "person")
 REL_TYPES = ("knows", "reports_to", "referred", "partner", "vendor", "competitor", "other")
 NODE_TEXT_FIELDS = ("name", "title", "email", "phone", "location", "tags", "owner_rep", "notes", "stage")
 NODE_COLUMNS = ("id", "type", "company_id", "x", "y", "created_at", "updated_at", "updated_by",
-                "wingmate_id", "wingmate_seen", "wingmate_sync") + NODE_TEXT_FIELDS
+                "wingmate_id", "wingmate_seen", "wingmate_sync", "color", "priority") + NODE_TEXT_FIELDS
 EDGE_COLUMNS = ("id", "source_id", "target_id", "rel_type", "strength", "notes",
                 "created_at", "updated_at", "updated_by")
 
@@ -212,6 +212,9 @@ MIGRATIONS = [  # (table, column, definition, backfill SQL run once when the col
     ("nodes", "wingmate_sync", "TEXT NOT NULL DEFAULT ''", None),
     # Where a contact is in the sales pipeline (from Wingmate's lead status, or set here).
     ("nodes", "stage", "TEXT NOT NULL DEFAULT ''", None),
+    # Shared card color (blank = automatic) and the high-priority flag (contacts).
+    ("nodes", "color", "TEXT NOT NULL DEFAULT ''", None),
+    ("nodes", "priority", "INTEGER NOT NULL DEFAULT 0", None),
 ]
 
 
@@ -849,6 +852,41 @@ def change_tags(node_id):
     return jsonify(node_row(db, node_id))
 
 
+# ---------- card color and priority ----------
+
+@app.post("/api/nodes/<int:node_id>/display")
+def change_display(node_id):
+    """Anyone signed in can recolor a card or flag a contact as high priority, like tags."""
+    db = get_db()
+    node = node_row(db, node_id)
+    if not node:
+        return bad("Not found", 404)
+    data = request.get_json(silent=True) or {}
+    changes, summary = {}, ""
+    if "color" in data:
+        color = str(data["color"] or "").strip().lower()
+        if color and not re.fullmatch(r"#[0-9a-f]{6}", color):
+            return bad("Pick a color from the list")
+        changes["color"] = color
+        summary = f"Changed the color of {node['name']}" if color else f"Reset the color of {node['name']}"
+    if "priority" in data:
+        if node["type"] != "person":
+            return bad("High priority is for contacts")
+        changes["priority"] = 1 if data["priority"] else 0
+        summary = (f"Marked {node['name']} high priority" if changes["priority"]
+                   else f"Removed high priority from {node['name']}")
+    if not changes:
+        return bad("Nothing to change")
+    if any(node[k] != v for k, v in changes.items()):
+        changes.update(updated_at=now(), updated_by=actor())
+        assignments = ", ".join(f"{col} = ?" for col in changes)
+        db.execute(f"UPDATE nodes SET {assignments} WHERE id = ?", [*changes.values(), node_id])
+        log(db, "display", summary)
+        bump_version(db)
+        db.commit()
+    return jsonify(node_row(db, node_id))
+
+
 # ---------- merging contacts ----------
 
 @app.post("/api/nodes/<int:node_id>/merge")
@@ -941,24 +979,25 @@ def export_csv(kind):
     picked.sort(key=lambda n: n["name"].lower())
     source = lambda n: "Wingmate" if n["wingmate_id"] else "PSS Connect"
     if kind == "contacts":
-        header = ["Name", "Title", "Company", "Stage", "Email", "Phone", "Location", "Owner rep", "Company tags",
+        header = ["Name", "Title", "Company", "High priority", "Stage", "Email", "Phone", "Location", "Owner rep", "Company tags",
                   "Connections", "Notes", "Latest note", "About", "Source", "Created", "Last edited", "Last edited by"]
         rows = []
         for n in picked:
             company = nodes.get(n["company_id"]) or {}
-            rows.append([n["name"], n["title"], company.get("name", ""), n["stage"], n["email"], n["phone"],
+            rows.append([n["name"], n["title"], company.get("name", ""), "Yes" if n["priority"] else "",
+                         n["stage"], n["email"], n["phone"],
                          n["location"] or company.get("location", ""), n["owner_rep"], company.get("tags", ""),
                          links.get(n["id"], 0), note_counts.get(n["id"], 0), last_note.get(n["id"], ""), n["notes"],
                          source(n), n["created_at"][:10], n["updated_at"][:10], n["updated_by"]])
     else:
-        header = ["Company", "Location", "Tags", "Owner rep", "Contacts", "Contact names", "Stages",
+        header = ["Company", "High-priority contacts", "Location", "Tags", "Owner rep", "Contacts", "Contact names", "Stages",
                   "Connections", "Notes", "About", "Source", "Created", "Last edited", "Last edited by"]
         rows = []
         for n in picked:
             staff = sorted((p for p in nodes.values() if p["type"] == "person" and p["company_id"] == n["id"]),
                            key=lambda p: p["name"].lower())
             stages = sorted({p["stage"] for p in staff if p["stage"]})
-            rows.append([n["name"], n["location"], n["tags"], n["owner_rep"], len(staff),
+            rows.append([n["name"], sum(1 for p in staff if p["priority"]), n["location"], n["tags"], n["owner_rep"], len(staff),
                          "; ".join(p["name"] for p in staff), "; ".join(stages), links.get(n["id"], 0),
                          note_counts.get(n["id"], 0), n["notes"], source(n), n["created_at"][:10],
                          n["updated_at"][:10], n["updated_by"]])
@@ -1317,6 +1356,8 @@ def import_json():
         row["wingmate_id"] = str(row["wingmate_id"] or "")
         row["wingmate_seen"] = str(row["wingmate_seen"] or "")
         row["wingmate_sync"] = str(row["wingmate_sync"] or "")
+        row["color"] = str(row["color"] or "")
+        row["priority"] = 1 if row["priority"] else 0
         db.insert("nodes", row)
     restored_edges = 0
     for e in edges:
