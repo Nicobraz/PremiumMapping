@@ -473,7 +473,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .rep-form .check { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--text); }
 .rep-form .check small { font-weight: 400; color: var(--muted); }
 .rep-form .check input { width: auto; }
-.rep-form:not(:has(input[name="is_admin"]:checked)) .admin-pass { display: none; }
+.account-signout { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 
 /* ---------- filter menu ---------- */
 .filter-wrap { position: relative; }

@@ -143,7 +143,7 @@ app.config.update(
 
 # Sign-ins last for the browser session: closing the browser (or clearing
 # cookies) means signing in again. Bumping the version signs everyone out.
-SESSION_VERSION = 2
+SESSION_VERSION = 3  # 3: every rep now signs in with a password
 
 
 def start_session():
@@ -244,6 +244,9 @@ def _init_schema(db):
                 db.execute(backfill)
     db.execute("CREATE INDEX IF NOT EXISTS idx_nodes_wingmate ON nodes(wingmate_id)")
     db.execute("INSERT INTO meta (key, value) VALUES ('version', 0) ON CONFLICT (key) DO NOTHING")
+    for rep in db.execute("SELECT id, name FROM reps WHERE password_hash = ''").fetchall():
+        db.execute("UPDATE reps SET password_hash = ? WHERE id = ?",
+                   (hash_password(default_password(rep["name"])), rep["id"]))
     db.execute("INSERT INTO settings (key, value) VALUES ('session_secret', ?) ON CONFLICT (key) DO NOTHING",
                (secrets.token_hex(32),))
     db.execute("INSERT INTO settings (key, value) VALUES ('backup_key', ?) ON CONFLICT (key) DO NOTHING",
@@ -350,11 +353,10 @@ def current_rep():
     rep = auth_info()["reps"].get(rep_id)
     if not rep or not rep["active"]:
         return None  # deactivated reps are signed out
-    if rep["is_admin"]:
-        # Admins signed in with a password; that session ends if the password changes.
-        token = session.get("rep_pw")
-        if not isinstance(token, str) or not rep["pw_fp"] or not hmac.compare_digest(token, rep["pw_fp"]):
-            return None
+    # Everyone signs in with a password; a session ends if that password changes.
+    token = session.get("rep_pw")
+    if not isinstance(token, str) or not rep["pw_fp"] or not hmac.compare_digest(token, rep["pw_fp"]):
+        return None
     return rep
 
 
@@ -1116,27 +1118,25 @@ def login():
     if not rep:
         note_failure()
         return bad("That email isn't on the team list. Ask your admin to add you.", 400)
-    if rep["is_admin"]:
-        if not password:
-            return jsonify({"needs_password": True})
-        stored = get_db().execute("SELECT password_hash FROM reps WHERE id = ?", (rep["id"],)).fetchone()
-        if not stored or not stored["password_hash"] or not check_password_hash(stored["password_hash"], password):
-            note_failure()
-            return bad("Wrong password", 400)
+    if not password:
+        return bad("Enter your password")
+    stored = get_db().execute("SELECT password_hash FROM reps WHERE id = ?", (rep["id"],)).fetchone()
+    if not stored or not stored["password_hash"] or not check_password_hash(stored["password_hash"], password):
+        note_failure()
+        return bad("Wrong email or password", 400)
     clear_failures()
     session.clear()
     start_session()
     session["rep_id"] = rep["id"]
-    if rep["is_admin"]:
-        session["rep_pw"] = rep["pw_fp"]
+    session["rep_pw"] = rep["pw_fp"]
     return jsonify(me_payload())
 
 
 @app.post("/api/me/password")
 def change_my_password():
     rep = current_rep()
-    if not rep or not rep["is_admin"]:
-        return bad("Only admins have a password", 403)
+    if not rep:
+        return bad("Sign in first", 403)
     new_password = str((request.get_json(silent=True) or {}).get("new_password") or "")
     if len(new_password) < 8:
         return bad("Use at least 8 characters")
@@ -1226,10 +1226,27 @@ def clean_rep_fields(db, data, rep_id=None):
     if "is_admin" in data:
         out["is_admin"] = 1 if data["is_admin"] else 0
     if data.get("password"):
-        if len(str(data["password"])) < 8:
-            return None, "Passwords need at least 8 characters"
-        out["password_hash"] = generate_password_hash(str(data["password"]), method="pbkdf2:sha256")
+        if len(str(data["password"])) < 6:
+            return None, "Passwords need at least 6 characters"
+        out["password_hash"] = hash_password(str(data["password"]))
+    elif data.get("reset_password"):
+        out["password_hash"] = hash_password(default_password(data.get("name") or rep_name(db, rep_id)))
     return out, None
+
+
+def hash_password(password):
+    return generate_password_hash(password, method="pbkdf2:sha256")
+
+
+def default_password(name):
+    """A new rep's starting password: first name, capitalized, + 123 (e.g. "Bryton123")."""
+    first = (str(name or "").strip().split() or ["Rep"])[0]
+    return first[:1].upper() + first[1:].lower() + "123"
+
+
+def rep_name(db, rep_id):
+    row = db.execute("SELECT name FROM reps WHERE id = ?", (rep_id or 0,)).fetchone()
+    return row["name"] if row else ""
 
 
 @app.post("/api/reps")
@@ -1242,8 +1259,8 @@ def create_rep():
     values, err = clean_rep_fields(db, {"active": 1, "email": "", **data})
     if err:
         return bad(err)
-    if values.get("is_admin") and not values.get("password_hash"):
-        return bad("Set a password for an admin")
+    if not values.get("password_hash"):
+        values["password_hash"] = hash_password(default_password(values["name"]))
     values["created_at"] = now()
     rep_id = db.insert("reps", values)
     log(db, "rep", f"Added rep {values['name']}")

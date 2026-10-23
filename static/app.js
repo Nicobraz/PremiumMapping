@@ -146,18 +146,8 @@ $('#signin-form').addEventListener('submit', async (evt) => {
   const err = $('#signin-error');
   err.hidden = true;
   try {
-    const passwordBox = $('#signin-password');
-    const result = await api('POST', '/api/login', {
-      email: $('#signin-email').value,
-      password: passwordBox.hidden ? '' : passwordBox.value,
-    });
-    if (result.needs_password) {
-      passwordBox.hidden = false;
-      passwordBox.required = true;
-      $('#signin-hint').textContent = 'You’re an admin, so enter your password too.';
-      passwordBox.focus();
-      return;
-    }
+    await api('POST', '/api/login', { email: $('#signin-email').value, password: $('#signin-password').value });
+    $('#signin-password').value = '';
     await loadMe();
   } catch (e) {
     err.textContent = e.message;
@@ -174,8 +164,28 @@ $('#signin-admin').addEventListener('click', () => {
   openAdminLogin();
 });
 
-$('#me-chip').addEventListener('click', async () => {
-  if (!confirm('Sign out of PSS Connect?')) return;
+const accountDialog = $('#account-dialog');
+$('#me-chip').addEventListener('click', () => {
+  $('#account-name').textContent = state.me ? state.me.name : 'Admin';
+  $('#account-email').textContent = state.me ? `Signed in as ${state.me.email}` : 'Signed in with the backup admin password.';
+  $('#account-password').hidden = !state.me;
+  $('#account-password').reset();
+  accountDialog.showModal();
+});
+accountDialog.addEventListener('click', (evt) => {
+  if (evt.target === accountDialog || evt.target.closest('[data-close]')) accountDialog.close();
+});
+$('#account-password').addEventListener('submit', async (evt) => {
+  evt.preventDefault();
+  const data = Object.fromEntries(new FormData(evt.target).entries());
+  if (data.new_password !== data.confirm) { toast('The two passwords don’t match', true); return; }
+  try {
+    await api('POST', '/api/me/password', { new_password: data.new_password });
+    accountDialog.close();
+    toast('Your password was changed');
+  } catch (err) { toast(err.message, true); }
+});
+$('#btn-signout').addEventListener('click', async () => {
   await fetch('/api/logout', { method: 'POST' });
   location.reload();
 });
@@ -2034,8 +2044,8 @@ function repRowHtml(r) {
         <input name="email" type="email" required value="${esc(r.email)}" maxlength="300" placeholder="Work email (to sign in)" aria-label="Work email">
         <input name="phone" type="tel" value="${esc(r.phone)}" maxlength="300" placeholder="Phone" aria-label="Phone">
       </div>
-      <label class="check"><input type="checkbox" name="is_admin" ${r.is_admin ? 'checked' : ''}> Admin <small>(manage reps, reassign leads; signs in with a password)</small></label>
-      <input class="admin-pass" name="password" type="password" minlength="8" autocomplete="new-password" placeholder="${r.is_admin ? 'New password (leave blank to keep)' : 'Password for this admin'}" aria-label="Admin password">
+      <label class="check"><input type="checkbox" name="is_admin" ${r.is_admin ? 'checked' : ''}> Admin <small>(manage reps, reassign leads)</small></label>
+      <input class="rep-pass" name="password" type="password" minlength="6" autocomplete="new-password" placeholder="New password (leave blank to keep)" aria-label="New password">
       <div class="row-btns">
         <button type="submit" class="btn btn-sm btn-primary">Save</button>
         <button type="button" class="btn btn-sm btn-ghost" data-rep-act="cancel">Cancel</button>
@@ -2050,6 +2060,7 @@ function repRowHtml(r) {
     <span class="rep-actions">
       <button class="btn btn-sm btn-ghost" data-rep-act="edit" data-rep="${r.id}">Edit</button>
       <button class="btn btn-sm btn-ghost" data-rep-act="toggle" data-rep="${r.id}">${r.active ? 'Deactivate' : 'Activate'}</button>
+      <button class="btn btn-sm btn-ghost" data-rep-act="reset" data-rep="${r.id}" title="Set their password back to Firstname123">Reset password</button>
       <button class="btn btn-sm btn-danger-ghost" data-rep-act="delete" data-rep="${r.id}">Delete</button>
     </span>
   </li>`;
@@ -2067,8 +2078,8 @@ function openAdminPanel() {
           <input name="email" type="email" required maxlength="300" placeholder="Work email (to sign in)" aria-label="Work email">
           <input name="phone" type="tel" maxlength="300" placeholder="Phone (optional)" aria-label="Phone">
         </div>
-      <label class="check"><input type="checkbox" name="is_admin" > Admin <small>(manage reps, reassign leads; signs in with a password)</small></label>
-      <input class="admin-pass" name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Password for this admin" aria-label="Admin password">
+      <label class="check"><input type="checkbox" name="is_admin" > Admin <small>(manage reps, reassign leads)</small></label>
+      <input class="rep-pass" name="password" type="password" minlength="6" autocomplete="new-password" placeholder="Password (leave blank for Firstname123)" aria-label="Password">
         <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">+ Add rep</button></div>
       </form>
       ${reps.length ? `<ul class="rep-list">${reps.map(repRowHtml).join('')}</ul>` : '<p class="muted">No reps yet.</p>'}
@@ -2224,6 +2235,14 @@ async function handleRepAction(act, id) {
       state.editRepId = act === 'edit' ? id : null;
       state.panelDirty = false;
       rerenderAdmin();
+      return;
+    }
+    if (act === 'reset') {
+      const first = rep.name.trim().split(/\s+/)[0] || 'Rep';
+      const pw = first.charAt(0).toUpperCase() + first.slice(1).toLowerCase() + '123';
+      if (!confirm(`Reset ${rep.name}'s password to ${pw}?`)) return;
+      await api('PATCH', `/api/reps/${id}`, { reset_password: true });
+      toast(`${rep.name}'s password is now ${pw}`);
       return;
     }
     if (act === 'toggle') await api('PATCH', `/api/reps/${id}`, { active: !rep.active });
@@ -2453,7 +2472,7 @@ $('#empty').addEventListener('click', (evt) => {
 });
 
 document.addEventListener('keydown', (evt) => {
-  if (evt.key !== 'Escape' || dataDialog.open || adminDialog.open) return;
+  if (evt.key !== 'Escape' || dataDialog.open || adminDialog.open || accountDialog.open) return;
   if (!filterMenu.hidden) toggleFilterMenu(false);
   else if (state.connecting) stopConnect();
   else if (state.focusId != null) clearFocus();

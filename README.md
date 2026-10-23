@@ -6,7 +6,7 @@ email, and changes show up for everyone within a few seconds.
 
 ## Signing in
 
-- **Reps** sign in with their work email, with no password. The email has to be on the admin's rep list. Sign-ins last until the browser is closed (or cookies are cleared); click your name (top right) to sign out sooner.
+- **Reps** sign in with their work email and password. A new rep's password is their first name + 123 (e.g. *Bryton123*) unless the admin types another one. Anyone can change theirs by tapping their name (top right), and admins can **Reset password** in ⚙ → Reps. Sign-ins last until the browser is closed (or cookies are cleared); click your name (top right) to sign out sooner.
 - **Admins** are reps with the Admin box ticked. They sign in with their email *and* a password, and can change it under ⚙ → **Your password**. To add one from the command line: `DATABASE_URL=... python app.py add-admin 'Full Name' email@company.com 'password'`.
 - **Backup admin password**: the small **Admin login** link on the sign-in screen, for when no admin can get in.
 - Deactivating a rep signs them out immediately.
