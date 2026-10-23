@@ -10,7 +10,7 @@
 <meta name="apple-mobile-web-app-title" content="PSS Connect">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" href="/static/emblem.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon-64.png" type="image/png">
 <link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="stylesheet" href="/static/styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
@@ -103,7 +103,7 @@
   </div>
 
   <div id="empty" class="empty" hidden>
-    <img class="empty-logo" src="/static/logo.svg" alt="Premium Surface Solutions">
+    <img class="empty-logo" src="/static/pss-connect-logo.svg" alt="PSS Connect by Premium Surface Solutions">
     <h2>Start your web</h2>
     <p>Add the companies you sell into, then the people at them, then draw the connections between everyone.</p>
     <div class="empty-actions">
@@ -167,7 +167,7 @@
       <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
     </div>
     <section>
-      <img class="dialog-logo" src="/static/logo.svg" alt="Premium Surface Solutions">
+      <img class="dialog-logo" src="/static/pss-connect-logo.svg" alt="PSS Connect by Premium Surface Solutions">
       <p>Admins can add and manage reps.</p>
       <label class="stack">Password
         <input id="admin-password" type="password" autocomplete="current-password" required>
@@ -180,8 +180,7 @@
 
 <div id="signin" class="signin" hidden>
   <form id="signin-form" class="signin-card">
-    <img class="signin-logo" src="/static/logo.svg" alt="Premium Surface Solutions">
-    <h1>PSS <em>Connect</em></h1>
+    <img class="signin-logo" src="/static/pss-connect-logo.svg" alt="PSS Connect by Premium Surface Solutions">
     <p id="signin-hint">Sign in with your work email.</p>
     <input id="signin-email" type="email" autocomplete="username" required placeholder="you@company.com" aria-label="Work email">
     <input id="signin-password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" hidden>
@@ -198,19 +197,19 @@
 
 <!-- Phone layout: bottom navigation and its pop-up menus (hidden on wider screens). -->
 <nav id="bottom-nav" class="bottom-nav" aria-label="Main">
-  <button type="button" data-nav="map" class="on"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/></svg><span>Map</span></button>
-  <button type="button" data-nav="contacts"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14.2c2.4.2 4 1.8 4.5 4.8"/></svg><span>Contacts</span></button>
-  <button type="button" data-nav="add" class="nav-add" aria-label="Add"><span class="plus">+</span></button>
-  <button type="button" data-nav="filter"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span>Filter</span><b id="nav-filter-count" class="count-badge" hidden></b></button>
-  <button type="button" data-nav="more"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span>More</span></button>
+  <button type="button" data-nav="contacts" class="on"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14.2c2.4.2 4 1.8 4.5 4.8"/></svg><span>Contacts</span></button>
+  <button type="button" data-nav="companies"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V6l7-3v17M11 20V9l9 3v8M2 20h20M7 9h1M7 13h1M7 17h1M15 14h1M15 17h1"/></svg><span>Companies</span></button>
+  <button type="button" data-nav="add" class="nav-add" aria-label="Add a contact or company"><span class="plus">+</span></button>
+  <button type="button" data-nav="map"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/></svg><span>Map</span></button>
+  <button type="button" data-nav="more"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span>More</span><b id="nav-filter-count" class="count-badge" hidden></b></button>
 </nav>
 <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
 <div id="sheet-add" class="sheet" role="menu" hidden>
+  <button type="button" class="sheet-item" data-sheet="add-person">+ Contact</button>
   <button type="button" class="sheet-item" data-sheet="add-company">+ Company</button>
-  <button type="button" class="sheet-item" data-sheet="add-person">+ Person</button>
-  <button type="button" class="sheet-item" data-sheet="connect">Connect two contacts</button>
 </div>
 <div id="sheet-more" class="sheet" role="menu" hidden>
+  <button type="button" class="sheet-item" data-sheet="filter">Filter the map</button>
   <button type="button" class="sheet-item" data-sheet="activity">Activity</button>
   <button type="button" class="sheet-item" data-sheet="data">Data, import &amp; export</button>
   <button type="button" class="sheet-item" data-sheet="admin">Admin settings</button>

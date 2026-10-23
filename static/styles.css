@@ -87,8 +87,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-mark { width: 40px; height: 26px; flex-shrink: 0; }
-.brand-name { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; line-height: 1.1; color: var(--accent); }
-.brand-name em { font-style: normal; color: var(--brand-red); }
+.brand-name { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; line-height: 1.1; color: var(--brand-red); }
+.brand-name em { font-style: normal; color: var(--accent); }
 .brand-sub { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .live-dot.on { background: #22c55e; }
@@ -456,7 +456,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 28px 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow);
 }
-.signin-logo { width: 220px; max-width: 80%; margin: 0 auto 4px; }
+.signin-logo { width: 300px; max-width: 92%; margin: 0 auto 4px; }
 .signin-card h1 { margin: 0; font-size: 22px; color: var(--accent); }
 .signin-card h1 em { font-style: normal; color: var(--brand-red); }
 .signin-card p { margin: 0; color: var(--muted); }
@@ -746,4 +746,30 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .sheet-item:hover, .sheet-item:active { background: var(--surface-2); }
   .sheet-item.danger { color: var(--danger); }
   .signin { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* Phone search inside the Contacts list (desktop uses "Filter by" only). */
+.dir-search { display: none; }
+@media (max-width: 720px) {
+  .dir-search {
+    display: block; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface-2);
+  }
+  .dir-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; background: var(--surface); }
+  .dir-list li .who b { font-size: 15px; }
+}
+
+/* ---------- steadier touch behaviour ---------- */
+button, a, label, select, .chip, .conn-list li, .tag-option { touch-action: manipulation; }  /* no double-tap zoom delay */
+#cy { touch-action: none; }  /* pinches and drags on the map go to the map, not the page */
+.panel, .filter-menu, .sheet, .dialog, .activity-list { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+
+@media (max-width: 720px) {
+  /* The page itself never scrolls (lists scroll inside), so it can't bounce, pull-to-refresh,
+     or make the address bar resize the layout. */
+  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  body { position: fixed; inset: 0; width: 100%; height: auto; }
+  body.typing .bottom-nav { display: none; }
+  body.typing .panel { bottom: 0; }
+  body.typing .filter-menu, body.typing .sheet { bottom: 0; }
 }

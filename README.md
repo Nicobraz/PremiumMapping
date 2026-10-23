@@ -36,7 +36,7 @@ email, and changes show up for everyone within a few seconds.
 
 ## On a phone
 
-The site switches to a phone layout automatically: a slim header with search, and a bottom bar with **Map · Contacts · ＋ Add · Filter · More**. Cards and lists open full screen. To install it like an app, open the site in Safari (iPhone) or Chrome (Android) and choose **Share → Add to Home Screen** (iPhone) or **⋮ → Add to Home screen / Install app** (Android).
+The site switches to a phone layout built for looking things up and adding contacts on the go. It opens on the **Contacts** list (with search), and the bottom bar has **Contacts · Companies · ＋ Add · Map · More**. Cards open full screen and show who each contact knows; closing a card goes back to the list. On phones the map's dots can't be dragged (arrange them from a computer), and filtering the map is under **More**. To install it like an app, open the site in Safari (iPhone) or Chrome (Android) and choose **Share → Add to Home Screen** (iPhone) or **⋮ → Add to Home screen / Install app** (Android).
 
 ## Wingmate sync
 

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="280" viewBox="0 0 1000 280" role="img" aria-labelledby="title desc">
+  <title id="title">PSS Connect</title>
+  <desc id="desc">Premium Surface Solutions PSS Connect app logo</desc>
+  <g fill="#e73235" transform="translate(48 78) scale(1.72)">
+    <polygon points="33.61 0 0 70.09 79.67 70.09 33.61 0"/>
+    <polygon points="57.48 32.08 79.67 14.71 112.21 70.09 82.88 70.09"/>
+  </g>
+  <path d="M287 58v164" fill="none" stroke="#144579" stroke-width="4"/>
+  <text x="330" y="151" fill="#e73235" font-family="Arial, Helvetica, sans-serif" font-size="78" font-weight="800" letter-spacing="-2">PSS</text>
+  <text x="495" y="151" fill="#144579" font-family="Arial, Helvetica, sans-serif" font-size="78" font-weight="700" letter-spacing="-2">Connect</text>
+  <text x="335" y="199" fill="#144579" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="600" letter-spacing="5">PREMIUM SURFACE SOLUTIONS</text>
+</svg>

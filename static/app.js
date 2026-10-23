@@ -260,6 +260,13 @@ const cy = cytoscape({
   boxSelectionEnabled: false,
 });
 
+// On phones a finger meant to pan or scroll can easily drag a dot, which would move it
+// for everyone, so dots are locked there (arrange them from a computer).
+const phoneQuery = window.matchMedia('(max-width: 720px)');
+const lockDotsOnPhones = () => cy.autoungrabify(phoneQuery.matches);
+lockDotsOnPhones();
+phoneQuery.addEventListener?.('change', () => { lockDotsOnPhones(); cy.resize(); });
+
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 darkQuery.addEventListener?.('change', () => cy.style(graphStyle()));
 
@@ -525,6 +532,7 @@ async function doSync() {
     render();
     if (state.firstLoad) {
       state.firstLoad = false;
+      if (isPhone() && !state.panel) openDirectory('people');
       if (cy.nodes().length) cy.fit(undefined, 50);
     }
     refreshPanelAfterSync();
@@ -667,7 +675,7 @@ function setView(view) {
   if (state.viewSets && !state.viewSets.visible.size) {
     toast(`Nothing is assigned to ${view === 'mine' ? 'you' : view} yet. Switch to Team view to see everyone's.`);
   }
-  if (shown.length) cy.animate({ fit: { eles: shown, padding: 60 }, duration: 350 });
+  if (shown.length) moveMap({ fit: { eles: shown, padding: 60 } }, 350);
 }
 
 $('#view-select').addEventListener('change', (evt) => setView(evt.target.value));
@@ -748,7 +756,7 @@ function setFilter(key, value) {
   const els = matched && matched.size
     ? cy.nodes().filter((el) => matched.has(el.data('nid')))
     : cy.elements();
-  if (els.length) cy.animate({ fit: { eles: els, padding: 70 }, duration: 350 });
+  if (els.length) moveMap({ fit: { eles: els, padding: 70 } }, 350);
 }
 
 const filterMenu = $('#filter-menu');
@@ -761,7 +769,7 @@ $('#btn-filter').addEventListener('click', () => toggleFilterMenu(filterMenu.hid
 $('#btn-filter-done').addEventListener('click', () => toggleFilterMenu(false));
 document.addEventListener('click', (evt) => {
   // Use the event path: a tapped chip may already be redrawn (detached) by now.
-  const inside = evt.composedPath().some((el) => el.classList?.contains('filter-wrap') || el.id === 'bottom-nav');
+  const inside = evt.composedPath().some((el) => el.classList?.contains('filter-wrap') || el.classList?.contains('sheet') || el.id === 'bottom-nav');
   if (!filterMenu.hidden && !inside) toggleFilterMenu(false);
 });
 $('#filter-city').addEventListener('change', (evt) => setFilter('city', evt.target.value));
@@ -835,7 +843,20 @@ function goToNode(id) {
   if (el.empty()) return;
   cy.elements().unselect();
   el.select();
-  cy.animate({ center: { eles: el }, zoom: Math.max(cy.zoom(), 1) }, { duration: 350 });
+  moveMap({ center: { eles: el }, zoom: Math.max(cy.zoom(), 1) }, 350);
+}
+
+// On phones the map sits behind full-screen lists and cards. Move it instantly there
+// instead of animating unseen, so it doesn't drift or jump when you come back to it.
+function moveMap(opts, duration) {
+  cy.stop(true, true);
+  if (isPhone() && state.panel) {
+    if (opts.fit) cy.fit(opts.fit.eles, opts.fit.padding);
+    if (opts.zoom) cy.zoom(opts.zoom);
+    if (opts.center) cy.center(opts.center.eles);
+    return;
+  }
+  cy.animate(opts, { duration });
 }
 
 // ---------- focus ----------
@@ -857,7 +878,7 @@ function focusOn(id) {
   state.focusId = id;
   applyFocus();
   const keep = cy.getElementById(`n${id}`).closedNeighborhood().closedNeighborhood();
-  cy.animate({ fit: { eles: keep, padding: 80 } }, { duration: 400 });
+  moveMap({ fit: { eles: keep, padding: 80 } }, 400);
 }
 
 function clearFocus() {
@@ -937,7 +958,7 @@ cy.on('tap', (evt) => {
 
 // The two quick taps that finish a connection can register as a double-tap; ignore those.
 cy.on('dbltap', 'node', (evt) => {
-  if (state.connecting || Date.now() - state.connectedAt < 500) return;
+  if (isPhone() || state.connecting || Date.now() - state.connectedAt < 500) return;
   focusOn(evt.target.data('nid'));
 });
 cy.on('mouseover', 'edge', (evt) => evt.target.addClass('hover'));
@@ -1608,6 +1629,13 @@ function dirItems() {
 }
 
 function dirMatches(n) {
+  const q = isPhone() ? state.dirQuery.trim().toLowerCase() : '';
+  if (q) {
+    const company = n.type === 'person' ? companyOf(n) : n;
+    const hay = [n.name, n.title, n.email, n.phone, n.location, n.owner_rep, n.stage, company?.name, company?.tags]
+      .map((v) => String(v || '').toLowerCase());
+    if (!hay.some((v) => v.includes(q))) return false;
+  }
   const byField = new Map();
   for (const f of state.dirFilters) {
     if (!byField.has(f.field)) byField.set(f.field, new Set());
@@ -1630,6 +1658,8 @@ function openDirectory(tab) {
       <div class="tabs-seg" role="tablist">
         ${[['people', 'Contacts'], ['companies', 'Companies']].map(([t, label]) => `<button type="button" role="tab" aria-selected="${state.dirTab === t}" class="${state.dirTab === t ? 'on' : ''}" data-dir-tab="${t}">${label}</button>`).join('')}
       </div>
+      <input id="dir-search" class="dir-search" type="search" value="${esc(state.dirQuery)}" autocomplete="off"
+        placeholder="Search name, company, email, phone…" aria-label="Search contacts">
       <div class="dir-add">
         <span>Filter by</span>
         <select id="dir-field" aria-label="Filter by">
@@ -1717,7 +1747,7 @@ function refreshPanelAfterSync() {
 }
 
 panel.addEventListener('input', (evt) => {
-  if (evt.target.id === 'dir-filter') {
+  if (evt.target.id === 'dir-search' || evt.target.id === 'dir-filter') {
     state.dirQuery = evt.target.value;
     renderDirectoryList();
     return;
@@ -1824,7 +1854,9 @@ panel.addEventListener('click', async (evt) => {
 
   const act = evt.target.closest('[data-act]')?.dataset.act;
   if (!act) return;
-  if (act === 'close') closePanel();
+  if (act === 'close') {
+    if (isPhone() && p?.kind !== 'directory') openDirectory(); else closePanel();
+  }
   else if (act === 'directory') openDirectory();
   else if (act === 'edit') openEditPanel(p.id);
   else if (act === 'cancel-edit') openNodePanel(p.id);
@@ -2333,7 +2365,7 @@ $('#csv-file').addEventListener('change', async (evt) => {
     const r = await api('POST', '/api/import.csv', form);
     dataDialog.close();
     await sync();
-    cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 });
+    moveMap({ fit: { eles: cy.elements(), padding: 50 } }, 300);
     toast(`Imported ${r.people} people and ${r.companies} companies${r.skipped ? ` (${r.skipped} skipped)` : ''}`);
   } catch (err) { toast(err.message, true); }
 });
@@ -2390,6 +2422,23 @@ document.addEventListener('keydown', (evt) => {
 });
 
 // ---------- phone layout: bottom navigation ----------
+// On phones the app is list-first (look up and add contacts on the go); the map
+// is one tab away.
+
+function isPhone() {
+  return phoneQuery.matches;
+}
+
+// While typing on a phone the keyboard would shove the bottom bar up over the screen:
+// hide it until the field loses focus.
+document.addEventListener('focusin', (evt) => {
+  if (isPhone() && evt.target.matches('input:not([type=checkbox]):not([type=radio]), textarea')) document.body.classList.add('typing');
+});
+document.addEventListener('focusout', () => {
+  setTimeout(() => {
+    if (!document.activeElement?.matches?.('input, textarea')) document.body.classList.remove('typing');
+  }, 50);
+});
 
 const sheets = { add: $('#sheet-add'), more: $('#sheet-more') };
 
@@ -2413,8 +2462,9 @@ function openSheet(name) {
 function syncNav(sheet) {
   const nav = $('#bottom-nav');
   if (!nav) return;
-  const current = sheet || (!filterMenu.hidden ? 'filter'
-    : state.panel?.kind === 'directory' ? 'contacts' : !$('#activity').hidden ? 'more' : 'map');
+  const list = state.dirTab === 'companies' ? 'companies' : 'contacts';
+  const current = sheet || (!filterMenu.hidden || !$('#activity').hidden ? 'more'
+    : state.panel ? list : 'map');
   nav.querySelectorAll('[data-nav]').forEach((b) => b.classList.toggle('on', b.dataset.nav === current));
 }
 
@@ -2423,11 +2473,10 @@ $('#bottom-nav').addEventListener('click', (evt) => {
   if (!which) return;
   if (which === 'map') {
     closeSheets(); toggleFilterMenu(false); closeActivity(); closePanel();
-  } else if (which === 'contacts') {
-    closeSheets(); toggleFilterMenu(false);
-    if (state.panel?.kind === 'directory') closePanel(); else openDirectory();
-  } else if (which === 'filter') {
-    closeSheets(); toggleFilterMenu(filterMenu.hidden);
+    cy.resize();
+  } else if (which === 'contacts' || which === 'companies') {
+    closeSheets(); toggleFilterMenu(false); closeActivity();
+    openDirectory(which === 'companies' ? 'companies' : 'people');
   } else {
     openSheet(which);
   }
@@ -2443,7 +2492,7 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
   ({
     'add-company': () => click('#btn-add-company'),
     'add-person': () => click('#btn-add-person'),
-    connect: () => click('#btn-connect'),
+    filter: () => { toggleFilterMenu(true); syncNav('more'); },
     activity: () => { click('#btn-activity'); syncNav('more'); },
     data: () => click('#btn-data'),
     admin: () => click('#btn-admin'),
@@ -2451,7 +2500,7 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
     layout: () => click('#btn-layout'),
     signout: () => click('#me-chip'),
   })[action]?.();
-  syncNav();
+  if (action !== 'filter' && action !== 'activity') syncNav();
 }));
 
 // ---------- start ----------
