@@ -57,7 +57,10 @@ Wingmate leads flow in automatically as companies, with their contacts as people
 
 ## Ask AI (built-in assistant)
 
-The **✦ Ask AI** tab on the right edge (on phones: More → Ask AI) opens a chat with Claude
+The **✦ Ask AI** tab on the right edge (on phones: More → Ask AI) opens Claude or ChatGPT in
+a new tab with the rep's question filled in ("Using PSS Connect: …"), using the connector below
+that each rep connects once. If an admin adds an Anthropic API key, the tab instead becomes a
+built-in chat with Claude
 (Sonnet 5.5) inside PSS Connect. Reps can ask about any company or contact, tell it about a
 meeting, or attach a business-card photo, PDF or CSV, and it updates PSS Connect as them, with
 the same tools and rules as the connector below (no deleting; bulk adds show a preview first).

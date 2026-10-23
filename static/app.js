@@ -2850,6 +2850,7 @@ async function loadAi() {
     ai.reason = err.message;
   }
   renderAi(true);
+  if (ai.enabled === false && ai.open && !isPhone()) $('#ai-launch-q')?.focus();
 }
 
 // A little Markdown: paragraphs, bullet and numbered lists, **bold**, `code`, and links.
@@ -2878,6 +2879,38 @@ function aiMarkdown(src) {
   return html + (list ? `</${list}>` : '');
 }
 
+// Without the built-in assistant, the tab opens Claude or ChatGPT in a new tab with the
+// question filled in. A link can't pick the PSS Connect plugin, so the question names it.
+const AI_APPS = {
+  claude: (q) => `https://claude.ai/new?q=${encodeURIComponent(q)}`,
+  chatgpt: (q) => `https://chatgpt.com/?q=${encodeURIComponent(q)}`,
+};
+
+function aiLauncherHtml() {
+  const url = `${location.origin}/mcp`;
+  return `<div class="ai-launch">
+    <p class="muted">Opens Claude or ChatGPT in a new tab, connected to PSS Connect as you.</p>
+    <textarea id="ai-launch-q" rows="3" placeholder="What do you want to ask? e.g. Who do I know at Summit Dental?"></textarea>
+    <button type="button" class="btn btn-primary ai-launch-btn" data-ai-open="claude">Open in Claude</button>
+    <button type="button" class="btn ai-launch-btn" data-ai-open="chatgpt">Open in ChatGPT</button>
+    <details class="ai-launch-help">
+      <summary>First time? Connect it once</summary>
+      <p><b>Claude:</b> Settings → Connectors → Add custom connector. Name it “PSS Connect”, paste the link below, click Add, then Connect and sign in with your PSS Connect email and password.</p>
+      <p><b>ChatGPT:</b> Settings → Apps → Advanced settings → turn on Developer mode → Create app. Paste the link, choose OAuth, and sign in. In a chat, turn on PSS Connect from the + menu. (On Plus/Pro it may only answer questions.)</p>
+      <div class="copy-row"><input readonly value="${esc(url)}" aria-label="Connector link"><button type="button" class="btn btn-sm" data-ai-copy="${esc(url)}">Copy</button></div>
+    </details>
+  </div>`;
+}
+
+function openAiApp(app) {
+  const typed = ($('#ai-launch-q')?.value || '').trim();
+  const question = typed
+    ? `Using PSS Connect: ${typed}`
+    : 'Using PSS Connect, give me a quick overview: who I am, my contacts, and anything waiting on me.';
+  window.open(AI_APPS[app](question), '_blank', 'noopener');
+  if ($('#ai-launch-q')) $('#ai-launch-q').value = '';
+}
+
 function aiMessageHtml(m) {
   if (m.role === 'user') {
     const files = m.files?.length ? `<div class="ai-attached">${m.files.map((f) => `📎 ${esc(f)}`).join('<br>')}</div>` : '';
@@ -2896,7 +2929,7 @@ function renderAi(scroll) {
   $('#ai-form').hidden = ai.enabled === false;
   $('#ai-new').hidden = !ai.enabled;
   if (ai.enabled === false) {
-    aiLog.innerHTML = `<div class="ai-empty"><h3>Ask AI</h3><p>${esc(ai.reason)}</p></div>`;
+    aiLog.innerHTML = aiLauncherHtml();
     return;
   }
   if (ai.enabled === null) {
@@ -3078,6 +3111,12 @@ $('#ai-new').addEventListener('click', async () => {
 });
 $('#ai-form').addEventListener('submit', (evt) => { evt.preventDefault(); sendAi(aiInput.value); });
 aiInput.addEventListener('input', autosizeAi);
+aiLog.addEventListener('keydown', (evt) => {
+  if (evt.target.id === 'ai-launch-q' && evt.key === 'Enter' && !evt.shiftKey && !isPhone()) {
+    evt.preventDefault();
+    openAiApp('claude');
+  }
+});
 aiInput.addEventListener('keydown', (evt) => {
   if (evt.key === 'Enter' && !evt.shiftKey && !isPhone() && !evt.isComposing) {
     evt.preventDefault();
@@ -3093,7 +3132,14 @@ $('#ai-files').addEventListener('click', (evt) => {
   const i = evt.target.closest('[data-ai-unattach]')?.dataset.aiUnattach;
   if (i != null) { ai.files.splice(Number(i), 1); renderAiFiles(); }
 });
-aiLog.addEventListener('click', (evt) => {
+aiLog.addEventListener('click', async (evt) => {
+  const app = evt.target.closest('[data-ai-open]')?.dataset.aiOpen;
+  if (app) { openAiApp(app); return; }
+  const copy = evt.target.closest('[data-ai-copy]')?.dataset.aiCopy;
+  if (copy) {
+    try { await navigator.clipboard.writeText(copy); toast('Connector link copied'); } catch { toast(copy); }
+    return;
+  }
   const suggestion = evt.target.closest('[data-ai-suggest]')?.dataset.aiSuggest;
   if (suggestion) {
     if (/photo/.test(suggestion)) { $('#ai-file').click(); aiInput.value = 'Add the people on this card.'; }

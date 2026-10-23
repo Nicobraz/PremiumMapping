@@ -888,3 +888,15 @@ body.ai-open { padding-right: 420px; }
 .wm-icon { display: inline-block; }
 #btn-wm-sync.busy .wm-icon { animation: spin .9s linear infinite; }
 @media (max-width: 720px) { #btn-wm-sync { display: none; } }
+.ai-launch { display: flex; flex-direction: column; gap: 10px; }
+.ai-launch p { margin: 0; font-size: 13px; line-height: 1.45; }
+.ai-launch textarea { resize: vertical; padding: 9px 11px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg); color: var(--text); line-height: 1.35; }
+.ai-launch textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ai-launch-btn { width: 100%; justify-content: center; padding: 11px; font-size: 15px; }
+.ai-launch-help { font-size: 13px; margin-top: 6px; }
+.ai-launch-help summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
+.ai-launch-help p { margin-bottom: 8px; }
+.ai-launch .copy-row { display: flex; gap: 8px; }
+.ai-launch .copy-row input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
