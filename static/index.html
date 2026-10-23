@@ -51,7 +51,12 @@
 </header>
 
 <div class="filterbar">
-  <div id="legend" class="legend" aria-label="Relationship types (click to show or hide)"></div>
+  <div class="view-and-legend">
+    <select id="view-select" class="view-select" aria-label="Whose map to show">
+      <option value="team">Team view</option>
+    </select>
+    <div id="legend" class="legend" aria-label="Relationship types (click to show or hide)"></div>
+  </div>
   <div class="filters">
     <div id="active-filters" class="active-filters"></div>
     <span id="stats" class="stats"></span>

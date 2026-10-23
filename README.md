@@ -25,6 +25,8 @@ email, and changes show up for everyone within a few seconds.
 - **Lead ownership**: a lead a rep adds is assigned to that rep automatically, and **only an admin can reassign it**. Reps can edit and delete only their own input: leads assigned to them, connections they added and notes they wrote. Anything else shows as view-only (they can still add tags, notes and connections to it). Admins can change everything, and restoring a backup is admin-only.
 - **Double-click** a person to show only their network within 2 steps. This answers "who can get us in front of this decision maker?"
 - **Drag** dots to arrange the map. Positions are saved for everyone. ✣ auto-arranges everything.
+- **Team view / My view** (left of the legend): Team view is the whole shared map, with each company shown once. My view shows only your companies and contacts, plus any company where one of your contacts works, so a company two reps both work appears in both reps' views, each with their own contacts. Other reps' contacts you've connected to appear faded. Admins can also pick any rep's view. Search, Filter, Directory and the stats follow the view.
+- **Connecting across reps:** anyone can connect their contact to any other contact, including ones they've never talked to.
 - **Legend chips** show or hide relationship types. **Filter** (top bar) narrows the map and Directory by **city** (from Location), **tag** or **rep**; a company's tag or city also keeps its people in view. Company tags show under the company name on the map.
 - **Activity** shows who changed what. **Data** imports a contacts CSV, downloads or restores a backup, and saves the map as a PNG.
 
@@ -38,6 +40,7 @@ Wingmate leads flow in automatically as companies, with their contacts as people
   - contact → person at that company (email, phone, title, notes)
   - lead comments → notes on the lead's **contact** (the primary contact if there are several; on the company only when the lead has no contact), imported once each. Company notes and tags don't exist in Wingmate and are entered here.
   - lead owner → Owner rep, matched to a rep by email or name; otherwise **unassigned**
+  - two reps' leads for the same company → **one** company, with each rep's contacts owned by that rep
 - **What's kept:** a lead matching an existing company or person is linked, not duplicated. PSS tags, notes, connections and positions are never touched. An owner, once set, is never overwritten. A field edited in PSS stays until it changes in Wingmate. Nothing is deleted when a lead is deleted in Wingmate.
 - **Editing synced records:** synced companies, people and notes follow the same rules as everything else (the owning rep or an admin edits; anyone can tag or add notes). If someone deletes a synced company, person or note here, the sync won't bring it back.
 - **Syncing while asleep:** the free server sleeps after 15 idle minutes. To keep syncing around the clock, add the link under *Sync even when nobody has the site open* to a free scheduler such as cron-job.org, every 15 minutes.

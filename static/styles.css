@@ -588,3 +588,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- team / rep view ---------- */
+.view-and-legend { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.view-select {
+  padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+  color: var(--text); font-size: 12.5px; font-weight: 650; cursor: pointer;
+}
+.view-select.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+@media (max-width: 720px) {
+  .view-and-legend { width: 100%; flex-wrap: nowrap; }
+  .view-and-legend .legend { flex: 1; min-width: 0; }
+}

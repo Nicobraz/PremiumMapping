@@ -279,8 +279,11 @@ def run_sync(db, client, tools, dry_run=False):
         update(node, {**changes, "wingmate_sync": json.dumps(snapshot, sort_keys=True)})
         return bool(visible)
 
-    # Leads -> companies.
-    lead_nodes, comment_queue = {}, []
+    # Leads -> companies. Two reps' leads for the same company share one company here:
+    # the first lead "owns" it (wingmate_id); later ones are recorded as aliases.
+    aliases = {r["ref"]: (r["node_id"], r["seen"]) for r in db.execute("SELECT ref, node_id, seen FROM wingmate_aliases")}
+    by_id = {n["id"]: n for n in nodes}
+    lead_nodes, lead_owner, comment_queue = {}, {}, []
     for lead in leads:
         lead_id = str(lead.get("id"))
         name = text(lead.get("name") or lead.get("identifier"))
@@ -292,14 +295,27 @@ def run_sync(db, client, tools, dry_run=False):
             continue
         location, full_address = address_parts(lead)
         owner = rep_for(first_id(lead.get("owner_ids")) or first_id(lead.get("worker_id")))
+        lead_owner[lead_id] = owner
         seen = text(lead.get("actioned_at") or lead.get("created_at"))
+        fresh = False
         node = by_wm.get(wm_id)
-        if node is None:
-            node = companies_by_name.get(norm_name(name, True))
-            if node is not None and not node.get("wingmate_id"):
+        if node is None and wm_id in aliases and aliases[wm_id][0] in by_id:
+            node = by_id[aliases[wm_id][0]]
+        elif node is None:
+            fresh = True
+            candidate = companies_by_name.get(norm_name(name, True))
+            if candidate is not None and not candidate.get("wingmate_id"):
                 counts["companies_linked"] += 1
-                update(node, {"wingmate_id": wm_id, **({"owner_rep": owner} if owner and not node["owner_rep"] else {})})
-                sync_fields(node, {"name": name, "location": location}, linking=True)
+                update(candidate, {"wingmate_id": wm_id, **({"owner_rep": owner} if owner and not candidate["owner_rep"] else {})})
+                sync_fields(candidate, {"name": name, "location": location}, linking=True)
+                node = by_wm[wm_id] = candidate
+            elif candidate is not None:
+                counts["companies_linked"] += 1
+                if not dry_run and candidate["id"] > 0:
+                    db.execute("INSERT INTO wingmate_aliases (ref, node_id, seen) VALUES (?, ?, '') "
+                               "ON CONFLICT (ref) DO NOTHING", (wm_id, candidate["id"]))
+                aliases[wm_id] = (candidate["id"], "")
+                node = candidate
             else:
                 about = "\n".join(p for p in (f"Address: {full_address}" if full_address else "",
                                               text(lead.get("description"), 5000)) if p)
@@ -309,17 +325,19 @@ def run_sync(db, client, tools, dry_run=False):
                           "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
                 node = {**values, "id": insert(values), "email": "", "phone": "", "title": "", "company_id": None}
                 companies_by_name[norm_name(name, True)] = node
+                by_wm[wm_id] = node
                 counts["companies_added"] += 1
-            by_wm[wm_id] = node
-        else:
-            changed = sync_fields(node, {"name": name, "location": location})
+        primary = node.get("wingmate_id") == wm_id
+        if not fresh:
+            changed = sync_fields(node, {"name": name, "location": location}) if primary else False
             if owner and not node["owner_rep"]:
                 changed = update(node, {"owner_rep": owner}) or changed
             counts["companies_updated"] += changed
         lead_nodes[lead_id] = node
         # Re-read comments only when the lead has new activity (or no timestamp to tell).
-        if not seen or seen != node.get("wingmate_seen"):
-            comment_queue.append((lead_id, node, seen))
+        last_seen = node.get("wingmate_seen") if primary else aliases.get(wm_id, (None, ""))[1]
+        if not seen or seen != last_seen:
+            comment_queue.append((lead_id, node, seen, primary))
 
     # Contacts -> people at their company.
     lead_contacts = {}  # lead id -> [(is primary, person node)]
@@ -348,7 +366,9 @@ def run_sync(db, client, tools, dry_run=False):
             else:
                 values = {"type": "person", "name": name, "company_id": company["id"], "email": email,
                           "phone": phone, "title": title, "notes": custom_value(contact, "note", "comment"),
-                          "owner_rep": company.get("owner_rep", ""), "wingmate_id": wm_id, "wingmate_seen": "",
+                          # Each contact belongs to the rep whose lead it came from.
+                          "owner_rep": lead_owner.get(lead_id) or company.get("owner_rep", ""),
+                          "wingmate_id": wm_id, "wingmate_seen": "",
                           "wingmate_sync": json.dumps({"name": name, "email": email, "phone": phone}, sort_keys=True),
                           "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
                 if dry_run and company["id"] < 0:
@@ -376,14 +396,16 @@ def run_sync(db, client, tools, dry_run=False):
     else:
         known = {r["external_id"] for r in db.execute("SELECT external_id FROM notes WHERE external_id <> ''")}
         known |= dismissed
-        # Move notes that an earlier sync put on the company over to the contact.
+        # Move notes that an earlier sync put on the company over to the contact
+        # (only for single-lead companies, where it's clear which contact they belong to).
+        shared = {node_id for node_id, _ in aliases.values()}
         for lead_id, company in lead_nodes.items():
             target = note_target(lead_id, company)
-            if target is not company and company["id"] > 0:
+            if target is not company and company["id"] > 0 and company["id"] not in shared:
                 moved = db.execute("UPDATE notes SET node_id = ? WHERE node_id = ? AND external_id LIKE ?",
                                    (target["id"], company["id"], "wingmate-comment:%"))
                 counts["notes_moved"] += max(moved.rowcount or 0, 0)
-        for lead_id, node, seen in comment_queue:
+        for lead_id, node, seen, primary in comment_queue:
             target = note_target(lead_id, node)
             for comment in client.get_all(f"/leads/{lead_id}/comments"):
                 ext = f"wingmate-comment:{comment.get('id')}"
@@ -396,7 +418,10 @@ def run_sync(db, client, tools, dry_run=False):
                                     "created_at": as_iso(comment.get("created_at")), "external_id": ext})
                 known.add(ext)
                 counts["notes_added"] += 1
-            update(node, {"wingmate_seen": seen})
+            if primary:
+                update(node, {"wingmate_seen": seen})
+            else:
+                db.execute("UPDATE wingmate_aliases SET seen = ? WHERE ref = ?", (seen, f"lead:{lead_id}"))
 
     changed = any(counts[k] for k in ("companies_added", "companies_linked", "companies_updated", "people_added",
                                       "people_linked", "people_updated", "notes_added", "notes_moved"))

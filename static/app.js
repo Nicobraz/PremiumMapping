@@ -43,6 +43,8 @@ const state = {
   focusId: null,
   hiddenRels: new Set(),
   ownerFilter: '',
+  view: storeGet('pss.view') || 'team',  // 'team', 'mine' or (admins) a rep's name
+  viewSets: null,       // { visible, context } node ids when a rep view is on
   tagFilter: '',
   cityFilter: '',
   firstLoad: true,
@@ -234,6 +236,8 @@ function graphStyle() {
     { selector: 'node.focus-root', style: { 'border-width': 5, 'border-color': accent } },
     { selector: '.dim, .faded', style: { 'opacity': 0.13 } },
     { selector: '.hidden-rel', style: { 'display': 'none' } },
+    { selector: '.view-hidden', style: { 'display': 'none' } },
+    { selector: 'node.ctx', style: { 'opacity': 0.45, 'border-style': 'dashed', 'border-width': 2, 'border-color': cssVar('--muted') } },
   ];
 }
 
@@ -316,7 +320,7 @@ function positionTagPills() {
   if (tagLayer.hidden) return;
   for (const [id, el] of tagPills) {
     const node = cy.getElementById(`n${id}`);
-    if (node.empty()) { el.hidden = true; continue; }
+    if (node.empty() || node.hasClass('view-hidden')) { el.hidden = true; continue; }
     const box = node.boundingBox({ includeNodes: true, includeLabels: true, includeOverlays: false });
     el.hidden = false;
     el.style.left = `${node.position('x') * zoom + pan.x}px`;
@@ -364,6 +368,8 @@ function render() {
     }
   });
   placeUnpositioned();
+  refreshViewOptions();
+  applyView();
   renderTagPills();
   applyFilters();
   applyFocus();
@@ -559,6 +565,7 @@ function filterMatches() {
   const cityOk = (n) => cityOf(n).toLowerCase() === city;
   const matched = new Set();
   for (const n of state.nodes.values()) {
+    if (!inView(n.id)) continue;  // filters work within the current view
     if (owner && n.owner_rep.trim().toLowerCase() !== owner) continue;
     const company = n.type === 'company' ? n : companyOf(n);
     if (tag && !(company && splitTags(company.tags).includes(tag))) continue;  // tags live on companies
@@ -567,6 +574,83 @@ function filterMatches() {
   }
   return matched;
 }
+
+// ---------- team view / rep view ----------
+// Team view is the whole shared map, each company once. A rep's view shows what's
+// theirs: their companies and contacts, plus any company where one of their contacts
+// works (so a company two reps both work shows in both views), plus faded "context"
+// for other reps' contacts they've connected to.
+
+function viewRep() {
+  if (state.view === 'team') return '';
+  if (state.view === 'mine') return myName();
+  return state.isAdmin ? state.view : myName();
+}
+
+function computeViewSets(rep) {
+  const r = rep.trim().toLowerCase();
+  const own = (n) => n.owner_rep.trim().toLowerCase() === r;
+  const visible = new Set();
+  for (const n of state.nodes.values()) {
+    if (!own(n)) continue;
+    visible.add(n.id);
+    if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) visible.add(n.company_id);
+  }
+  const context = new Set();
+  for (const e of state.edges.values()) {
+    if (visible.has(e.source_id) && !visible.has(e.target_id)) context.add(e.target_id);
+    if (visible.has(e.target_id) && !visible.has(e.source_id)) context.add(e.source_id);
+  }
+  return { visible, context };
+}
+
+function inView(id) {
+  const v = state.viewSets;
+  return !v || v.visible.has(id) || v.context.has(id);
+}
+
+function applyView() {
+  const rep = viewRep();
+  state.viewSets = rep ? computeViewSets(rep) : null;
+  const v = state.viewSets;
+  cy.batch(() => {
+    cy.nodes().forEach((el) => {
+      const id = el.data('nid');
+      el.toggleClass('view-hidden', !!v && !v.visible.has(id) && !v.context.has(id));
+      el.toggleClass('ctx', !!v && v.context.has(id));
+    });
+  });
+  $('#view-select').classList.toggle('active', !!v);
+}
+
+function refreshViewOptions() {
+  const select = $('#view-select');
+  const me = myName();
+  const others = state.isAdmin ? activeReps().map((r) => r.name).filter((name) => name !== me) : [];
+  if (state.view !== 'team' && state.view !== 'mine' && !others.includes(state.view)) state.view = 'team';
+  if (state.view === 'mine' && !me) state.view = 'team';
+  select.innerHTML = '<option value="team">Team view</option>'
+    + (me ? '<option value="mine">My view</option>' : '')
+    + (others.length ? `<optgroup label="A rep's view">${others.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</optgroup>` : '');
+  select.value = state.view;
+}
+
+function setView(view) {
+  state.view = view;
+  storeSet('pss.view', view);
+  applyView();
+  applyFilters();
+  updateStats();
+  scheduleTagPositions();
+  applySearch();
+  const shown = cy.nodes().not('.view-hidden');
+  if (state.viewSets && !state.viewSets.visible.size) {
+    toast(`Nothing is assigned to ${view === 'mine' ? 'you' : view} yet. Switch to Team view to see everyone's.`);
+  }
+  if (shown.length) cy.animate({ fit: { eles: shown, padding: 60 }, duration: 350 });
+}
+
+$('#view-select').addEventListener('change', (evt) => setView(evt.target.value));
 
 function applyFilters() {
   const matched = activeFilterCount() ? filterMatches() : null;
@@ -670,12 +754,15 @@ $('#active-filters').addEventListener('click', (evt) => {
 function updateStats() {
   let companies = 0;
   let people = 0;
-  for (const n of state.nodes.values()) { if (n.type === 'company') companies += 1; else people += 1; }
+  for (const n of state.nodes.values()) {
+    if (!inView(n.id)) continue;
+    if (n.type === 'company') companies += 1; else people += 1;
+  }
   const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   $('#stats').textContent = [
     count(companies, 'company', 'companies'),
     count(people, 'person', 'people'),
-    count(state.edges.size, 'connection', 'connections'),
+    count([...state.edges.values()].filter((e) => inView(e.source_id) && inView(e.target_id)).length, 'connection', 'connections'),
   ].join(' · ');
 }
 
@@ -684,7 +771,7 @@ function updateStats() {
 function searchMatches() {
   const q = $('#search').value.trim().toLowerCase();
   if (!q) return [];
-  return [...state.nodes.values()].filter((n) =>
+  return [...state.nodes.values()].filter((n) => inView(n.id)).filter((n) =>
     [n.name, n.title, n.email, n.type === 'company' ? n.tags : '', n.location, n.owner_rep, n.notes].some((v) => String(v || '').toLowerCase().includes(q))
     || (state.noteText.get(n.id) || '').includes(q));
 }
@@ -1405,7 +1492,8 @@ function renderDirectoryList() {
   if (!list) return;
   const q = state.dirQuery.trim().toLowerCase();
   const filtered = activeFilterCount() ? filterMatches() : null;
-  const matches = (n) => (!filtered || filtered.has(n.id)) && (!q || [n.name, n.title, n.location, n.tags, n.owner_rep, companyOf(n)?.name]
+  const viewOk = (n) => inView(n.id);
+  const matches = (n) => viewOk(n) && (!filtered || filtered.has(n.id)) && (!q || [n.name, n.title, n.location, n.tags, n.owner_rep, companyOf(n)?.name]
     .some((v) => String(v || '').toLowerCase().includes(q)));
   if (state.dirTab === 'companies') {
     const items = [...state.nodes.values()].filter((n) => n.type === 'company' && matches(n)).sort(byName);

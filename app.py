@@ -106,6 +106,12 @@ CREATE TABLE IF NOT EXISTS wingmate_dismissed (
     ref  TEXT PRIMARY KEY,
     ts   TEXT NOT NULL
 );
+-- Extra Wingmate leads for a company that's already here (e.g. two reps' leads for one company).
+CREATE TABLE IF NOT EXISTS wingmate_aliases (
+    ref      TEXT PRIMARY KEY,
+    node_id  INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    seen     TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
@@ -717,6 +723,8 @@ def delete_node(node_id):
     if not can_edit_node(existing):
         return not_yours("leads assigned to you")
     dismiss_wingmate(db, existing["wingmate_id"])
+    for alias in db.execute("SELECT ref FROM wingmate_aliases WHERE node_id = ?", (node_id,)).fetchall():
+        dismiss_wingmate(db, alias["ref"])
     db.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
     log(db, "delete", f"Deleted {existing['type']} {existing['name']}")
     bump_version(db)
