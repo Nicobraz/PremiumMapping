@@ -36,7 +36,7 @@ Wingmate leads flow in automatically as companies, with their contacts as people
 - **Mapping:**
   - lead → company (name, city/state from the address; address and description go in About)
   - contact → person at that company (email, phone, title, notes)
-  - lead comments → notes, imported once each
+  - lead comments → notes on the lead's **contact** (the primary contact if there are several; on the company only when the lead has no contact), imported once each. Company notes and tags don't exist in Wingmate and are entered here.
   - lead owner → Owner rep, matched to a rep by email or name; otherwise **unassigned**
 - **What's kept:** a lead matching an existing company or person is linked, not duplicated. PSS tags, notes, connections and positions are never touched. An owner, once set, is never overwritten. A field edited in PSS stays until it changes in Wingmate. Nothing is deleted when a lead is deleted in Wingmate.
 - **Editing synced records:** synced companies, people and notes follow the same rules as everything else (the owning rep or an admin edits; anyone can tag or add notes). If someone deletes a synced company, person or note here, the sync won't bring it back.

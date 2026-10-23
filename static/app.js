@@ -1700,7 +1700,7 @@ const WM_LABELS = [
   ['companies_added', 'company added', 'companies added'], ['companies_linked', 'company linked', 'companies linked'],
   ['companies_updated', 'company updated', 'companies updated'], ['people_added', 'person added', 'people added'],
   ['people_linked', 'person linked', 'people linked'], ['people_updated', 'person updated', 'people updated'],
-  ['notes_added', 'note added', 'notes added'],
+  ['notes_added', 'note added', 'notes added'], ['notes_moved', 'note moved to its contact', 'notes moved to their contacts'],
 ];
 
 function wingmateCounts(r, preview) {

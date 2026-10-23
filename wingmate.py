@@ -242,7 +242,7 @@ def run_sync(db, client, tools, dry_run=False):
 
     counts = {"leads": len(leads), "contacts": len(contacts), "companies_added": 0, "companies_linked": 0,
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
-              "notes_added": 0, "skipped": 0}
+              "notes_added": 0, "notes_moved": 0, "skipped": 0}
     ts = now()
     fake_id = [0]
 
@@ -322,6 +322,7 @@ def run_sync(db, client, tools, dry_run=False):
             comment_queue.append((lead_id, node, seen))
 
     # Contacts -> people at their company.
+    lead_contacts = {}  # lead id -> [(is primary, person node)]
     for contact in contacts:
         contact_id = str(contact.get("id"))
         lead_id = first_id(contact.get("lead_id") or contact.get("lead"))
@@ -360,6 +361,14 @@ def run_sync(db, client, tools, dry_run=False):
             by_wm[wm_id] = node
         else:
             counts["people_updated"] += sync_fields(node, {"name": name, "email": email, "phone": phone})
+        lead_contacts.setdefault(lead_id, []).append((bool(contact.get("primary_contact")), node))
+
+    def note_target(lead_id, company):
+        """Wingmate notes are about the person: the lead's primary contact, else its first
+        contact; the company only when the lead has no contact here."""
+        people = [(primary, n) for primary, n in lead_contacts.get(lead_id, []) if n["id"] > 0]
+        people.sort(key=lambda pair: not pair[0])
+        return people[0][1] if people else company
 
     # Lead comments -> notes (each Wingmate comment imported once).
     if dry_run:
@@ -367,14 +376,22 @@ def run_sync(db, client, tools, dry_run=False):
     else:
         known = {r["external_id"] for r in db.execute("SELECT external_id FROM notes WHERE external_id <> ''")}
         known |= dismissed
+        # Move notes that an earlier sync put on the company over to the contact.
+        for lead_id, company in lead_nodes.items():
+            target = note_target(lead_id, company)
+            if target is not company and company["id"] > 0:
+                moved = db.execute("UPDATE notes SET node_id = ? WHERE node_id = ? AND external_id LIKE ?",
+                                   (target["id"], company["id"], "wingmate-comment:%"))
+                counts["notes_moved"] += max(moved.rowcount or 0, 0)
         for lead_id, node, seen in comment_queue:
+            target = note_target(lead_id, node)
             for comment in client.get_all(f"/leads/{lead_id}/comments"):
                 ext = f"wingmate-comment:{comment.get('id')}"
                 body = text(comment.get("text") or comment.get("body") or comment.get("comment"), 5000)
                 if ext in known or not body:
                     continue
                 label = comment_label(comment)
-                db.insert("notes", {"node_id": node["id"], "body": f"{label}: {body}" if label else body,
+                db.insert("notes", {"node_id": target["id"], "body": f"{label}: {body}" if label else body,
                                     "author": author_for(comment),
                                     "created_at": as_iso(comment.get("created_at")), "external_id": ext})
                 known.add(ext)
@@ -382,10 +399,11 @@ def run_sync(db, client, tools, dry_run=False):
             update(node, {"wingmate_seen": seen})
 
     changed = any(counts[k] for k in ("companies_added", "companies_linked", "companies_updated", "people_added",
-                                      "people_linked", "people_updated", "notes_added"))
+                                      "people_linked", "people_updated", "notes_added", "notes_moved"))
     if changed and not dry_run:
         summary = (f"Wingmate sync: +{counts['companies_added']} companies, +{counts['people_added']} people, "
                    f"+{counts['notes_added']} notes, "
+                   + (f"{counts['notes_moved']} notes moved to contacts, " if counts["notes_moved"] else "") +
                    f"{counts['companies_updated'] + counts['people_updated']} updated, "
                    f"{counts['companies_linked'] + counts['people_linked']} linked")
         db.execute("INSERT INTO activity (ts, actor, action, summary) VALUES (?, ?, ?, ?)",
