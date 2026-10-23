@@ -112,6 +112,17 @@ CREATE TABLE IF NOT EXISTS wingmate_aliases (
     node_id  INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     seen     TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS transfer_requests (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    from_rep    TEXT NOT NULL DEFAULT '',
+    to_rep      TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  TEXT NOT NULL,
+    decided_at  TEXT NOT NULL DEFAULT '',
+    decided_by  TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS backups (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at  TEXT NOT NULL,
@@ -407,6 +418,7 @@ def snapshot(db):
         "edges": [dict(r) for r in db.execute("SELECT * FROM edges ORDER BY id")],
         "notes": [dict(r) for r in db.execute("SELECT * FROM notes ORDER BY id")],
         "reps": [dict(r) for r in db.execute(f"SELECT {REP_PUBLIC_COLUMNS} FROM reps ORDER BY name")],
+        "transfers": [dict(r) for r in db.execute("SELECT * FROM transfer_requests ORDER BY id")],
     }
 
 
@@ -867,6 +879,90 @@ def change_tags(node_id):
         bump_version(db)
         db.commit()
     return jsonify(node_row(db, node_id))
+
+
+# ---------- lead transfer requests ----------
+# A rep can ask for a lead that belongs to someone else. The current owner (or an
+# admin; only an admin for unassigned leads) approves or declines. Approving moves
+# the lead, and for a company also the previous owner's contacts there.
+
+def transfer_row(db, transfer_id):
+    row = db.execute("SELECT * FROM transfer_requests WHERE id = ?", (transfer_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def can_decide(transfer):
+    me = own_name()
+    return is_admin() or bool(me and transfer["from_rep"] and transfer["from_rep"] == me)
+
+
+@app.post("/api/nodes/<int:node_id>/transfer-request")
+def request_transfer(node_id):
+    db = get_db()
+    node = node_row(db, node_id)
+    if not node:
+        return bad("Not found", 404)
+    me = own_name()
+    if not me:
+        return bad("Sign in as a rep to request a lead", 403)
+    if node["owner_rep"] == me:
+        return bad("This lead is already yours")
+    pending = db.execute("SELECT id FROM transfer_requests WHERE node_id = ? AND to_rep = ? AND status = 'pending'",
+                         (node_id, me)).fetchone()
+    if pending:
+        return bad("You've already asked for this lead")
+    reason = str((request.get_json(silent=True) or {}).get("reason") or "").strip()[:1000]
+    transfer_id = db.insert("transfer_requests", {"node_id": node_id, "from_rep": node["owner_rep"], "to_rep": me,
+                                                  "reason": reason, "status": "pending", "created_at": now()})
+    owner = node["owner_rep"] or "an admin (unassigned)"
+    log(db, "transfer", f"Requested {node['name']} from {owner}")
+    bump_version(db)
+    db.commit()
+    return jsonify(transfer_row(db, transfer_id)), 201
+
+
+@app.post("/api/transfers/<int:transfer_id>/<action>")
+def decide_transfer(transfer_id, action):
+    if action not in ("approve", "decline", "cancel"):
+        return bad("Not found", 404)
+    db = get_db()
+    t = transfer_row(db, transfer_id)
+    if not t:
+        return bad("Not found", 404)
+    if t["status"] != "pending":
+        return bad(f"This request was already {t['status']}")
+    node = node_row(db, t["node_id"])
+    if action == "cancel":
+        if t["to_rep"] != own_name() and not is_admin():
+            return bad("Only the rep who asked can cancel this request", 403)
+        status, summary = "cancelled", f"Cancelled their request for {node['name']}"
+    else:
+        if not can_decide(t):
+            return bad("Only the lead's owner or an admin can decide this", 403)
+        if node["owner_rep"] != t["from_rep"]:
+            status, summary = "cancelled", f"Request for {node['name']} closed: the lead changed hands meanwhile"
+        elif action == "approve":
+            status = "approved"
+            db.execute("UPDATE nodes SET owner_rep = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                       (t["to_rep"], now(), actor(), node["id"]))
+            moved = 0
+            if node["type"] == "company" and t["from_rep"]:
+                cur = db.execute("UPDATE nodes SET owner_rep = ? WHERE company_id = ? AND owner_rep = ?",
+                                 (t["to_rep"], node["id"], t["from_rep"]))
+                moved = max(cur.rowcount or 0, 0)
+            extra = f" with {moved} contact{'s' if moved != 1 else ''}" if moved else ""
+            summary = f"Transferred {node['name']}{extra} to {t['to_rep']}"
+            # Other pending requests for the same lead are now moot.
+            db.execute("UPDATE transfer_requests SET status = 'cancelled', decided_at = ?, decided_by = ? "
+                       "WHERE node_id = ? AND status = 'pending' AND id != ?", (now(), actor(), node["id"], t["id"]))
+        else:
+            status, summary = "declined", f"Declined {t['to_rep']}'s request for {node['name']}"
+    db.execute("UPDATE transfer_requests SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",
+               (status, now(), actor(), transfer_id))
+    log(db, "transfer", summary)
+    bump_version(db)
+    db.commit()
+    return jsonify(transfer_row(db, transfer_id))
 
 
 # ---------- card color and priority ----------

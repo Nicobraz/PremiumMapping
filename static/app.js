@@ -31,6 +31,7 @@ const state = {
   panelDirty: false,
   picker: null,         // { nodeId, otherId } while the inline "add connection" form is open
   reps: [],
+  transfers: [],        // lead transfer requests
   wingmate: null,       // admin-only Wingmate connection status
   wingmateEditing: false,
   isAdmin: false,
@@ -536,6 +537,8 @@ async function doSync() {
       state.notes.get(note.node_id).push(note);
     }
     state.reps = data.reps || [];
+    state.transfers = data.transfers || [];
+    renderRequestsBadge();
     $('#storage-warning').hidden = !data.temporary_storage;
     state.noteText = new Map([...state.notes].map(([id, list]) =>
       [id, list.map((note) => note.body).join('\n').toLowerCase()]));
@@ -1109,7 +1112,13 @@ function actionsHtml(n) {
       ${CARD_COLORS.map((c) => `<button type="button" class="color-swatch ${n.color === c ? 'on' : ''}" data-color="${c}" style="background:${c}" aria-label="Color ${c}"></button>`).join('')}
       <button type="button" class="btn btn-sm btn-ghost" data-color="">${n.type === 'person' ? 'Use company color' : 'Default'}</button>
     </div>` : '';
-  return `<div class="card-actions">${btns.join('')}</div>${picker}${viewOnly}`;
+  const mine = myTransferRequest(n.id);
+  if (mine) {
+    btns.push(`<button class="btn btn-sm btn-pending" data-act="cancel-transfer" data-transfer="${mine.id}" title="Cancel your request">⏳ Transfer requested · Cancel</button>`);
+  } else if (state.me && !canEditNode(n) && n.owner_rep !== myName()) {
+    btns.push('<button class="btn btn-sm" data-act="request-transfer" title="Ask the owner (or an admin) to give you this lead">Request transfer</button>');
+  }
+  return `<div class="card-actions">${btns.join('')}</div>${picker}${transferBannerHtml(n)}${viewOnly}`;
 }
 
 // Anyone can add or remove a company's tags (not just its owner); new tags
@@ -1557,6 +1566,91 @@ function openNewEdgePanel(sourceId, targetId) {
     + edgeFormHtml(draft, true));
 }
 
+// ----- lead transfer requests -----
+// Reps ask for leads that belong to someone else; the owner (or an admin; only
+// an admin for unassigned leads) approves or declines.
+
+function myTransferRequest(nodeId) {
+  return state.transfers.find((t) => t.node_id === nodeId && t.status === 'pending' && t.to_rep === myName());
+}
+
+function canDecideTransfer(t) {
+  return state.isAdmin || (!!myName() && !!t.from_rep && t.from_rep === myName());
+}
+
+function incomingTransfers() {
+  return state.transfers.filter((t) => t.status === 'pending' && canDecideTransfer(t) && t.to_rep !== myName());
+}
+
+function transferBannerHtml(n) {
+  const waiting = state.transfers.filter((t) => t.node_id === n.id && t.status === 'pending' && canDecideTransfer(t));
+  return waiting.map((t) => `<div class="transfer-banner">
+      <div><b>${esc(t.to_rep)}</b> asked for this lead${n.type === 'company' && t.from_rep ? ` (and ${esc(t.from_rep)}'s contacts here)` : ''}.
+        ${t.reason ? `<span class="muted">“${esc(t.reason)}”</span>` : ''}</div>
+      <div class="row-btns">
+        <button type="button" class="btn btn-sm btn-primary" data-act="approve-transfer" data-transfer="${t.id}">Approve</button>
+        <button type="button" class="btn btn-sm" data-act="decline-transfer" data-transfer="${t.id}">Decline</button>
+      </div>
+    </div>`).join('');
+}
+
+async function decideTransfer(id, action) {
+  const t = state.transfers.find((x) => x.id === id);
+  if (action === 'approve' && t && !confirm(`Give ${state.nodes.get(t.node_id)?.name || 'this lead'} to ${t.to_rep}?`)) return;
+  try {
+    const r = await api('POST', `/api/transfers/${id}/${action}`);
+    await sync();
+    if (state.panel?.kind === 'node') rerenderCard();
+    if (state.panel?.kind === 'requests') openRequestsPanel(true);
+    toast({ approved: `Transferred to ${r.to_rep}`, declined: 'Request declined', cancelled: 'Request cancelled' }[r.status] || 'Done');
+  } catch (err) { toast(err.message, true); }
+}
+
+function renderRequestsBadge() {
+  const count = incomingTransfers().length;
+  $('#btn-requests').hidden = !count && !state.transfers.some((t) => t.to_rep === myName() && t.status === 'pending');
+  $('#requests-count').textContent = count || '';
+  $('#requests-count').hidden = !count;
+  $('#sheet-requests-count').textContent = count;
+  $('#sheet-requests-count').hidden = !count;
+  $('#nav-requests-dot').hidden = !count;
+}
+
+function openRequestsPanel(keepScroll) {
+  const scroll = panel.scrollTop;
+  const name = (t) => state.nodes.get(t.node_id)?.name || 'A deleted lead';
+  const when = (iso) => esc(timeAgo(iso));
+  const incoming = incomingTransfers();
+  const mine = state.transfers.filter((t) => t.to_rep === myName())
+    .sort((a, b) => b.id - a.id).slice(0, 20);
+  const STATUS = { pending: 'Waiting', approved: 'Approved', declined: 'Declined', cancelled: 'Cancelled' };
+  showPanel({ kind: 'requests' }, `${panelHead('', '', 'Transfer requests')}
+    <div class="section">
+      <h3>Waiting for you <span>${incoming.length}</span></h3>
+      ${incoming.length ? `<ul class="conn-list request-list">${incoming.map((t) => `<li>
+          <span class="who"><b data-goto="${t.node_id}" class="request-lead">${esc(name(t))}</b>
+            <span>${esc(t.to_rep)} asked ${when(t.created_at)}${t.from_rep ? ` · now ${esc(t.from_rep)}'s` : ' · unassigned'}</span>
+            ${t.reason ? `<span class="request-reason">“${esc(t.reason)}”</span>` : ''}</span>
+          <span class="row-btns">
+            <button type="button" class="btn btn-sm btn-primary" data-act="approve-transfer" data-transfer="${t.id}">Approve</button>
+            <button type="button" class="btn btn-sm" data-act="decline-transfer" data-transfer="${t.id}">Decline</button>
+          </span></li>`).join('')}</ul>` : '<p class="muted">Nothing to decide.</p>'}
+    </div>
+    ${state.me ? `<div class="section">
+      <h3>Your requests</h3>
+      ${mine.length ? `<ul class="conn-list request-list">${mine.map((t) => `<li>
+          <span class="who"><b data-goto="${t.node_id}" class="request-lead">${esc(name(t))}</b>
+            <span>${STATUS[t.status] || t.status} · asked ${when(t.created_at)}${t.from_rep ? ` from ${esc(t.from_rep)}` : ''}</span></span>
+          ${t.status === 'pending' ? `<button type="button" class="btn btn-sm btn-ghost" data-act="cancel-transfer" data-transfer="${t.id}">Cancel</button>` : ''}
+        </li>`).join('')}</ul>` : '<p class="muted">To ask for a lead that belongs to someone else, open it and tap <b>Request transfer</b>.</p>'}
+    </div>` : ''}`);
+  if (keepScroll) panel.scrollTop = scroll;
+}
+
+$('#btn-requests').addEventListener('click', () => {
+  if (state.panel?.kind === 'requests') closePanel(); else openRequestsPanel();
+});
+
 // ----- merging duplicate contacts -----
 
 function mergeCandidates(keep, query) {
@@ -1746,6 +1840,7 @@ function refreshPanelAfterSync() {
   if (p.kind === 'new-edge' && (!state.nodes.has(p.sourceId) || !state.nodes.has(p.targetId))) { closePanel(); return; }
   if (p.kind === 'directory') { renderDirectoryList(); return; }
   if (p.kind === 'merge') { if (state.nodes.has(p.id)) renderMergeList(); else closePanel(); return; }
+  if (p.kind === 'requests') { openRequestsPanel(true); return; }
   if (state.panelDirty) return;
   if (p.kind === 'admin') rerenderAdmin();
   else if (p.kind === 'node') rerenderCard();
@@ -1883,6 +1978,19 @@ panel.addEventListener('click', async (evt) => {
       rerenderCard();
       toast(n.priority ? 'Removed high priority' : `${n.name} is now high priority`);
     } catch (err) { toast(err.message, true); }
+  } else if (act === 'request-transfer') {
+    const n = state.nodes.get(p.id);
+    const to = n.owner_rep ? n.owner_rep : 'an admin';
+    const reason = prompt(`Ask ${to} to give you ${n.name}?\n\nAdd a reason (optional):`, '');
+    if (reason === null) return;
+    try {
+      await api('POST', `/api/nodes/${p.id}/transfer-request`, { reason });
+      await sync();
+      rerenderCard();
+      toast(`Request sent to ${to}`);
+    } catch (err) { toast(err.message, true); }
+  } else if (act === 'cancel-transfer' || act === 'approve-transfer' || act === 'decline-transfer') {
+    await decideTransfer(Number(evt.target.closest('[data-transfer]').dataset.transfer), act.split('-')[0]);
   } else if (act === 'merge') openMergePanel(p.id);
   else if (act === 'cancel-merge') openNodePanel(p.id);
   else if (act === 'force-save') {
@@ -2562,6 +2670,7 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
     'add-person': () => click('#btn-add-person'),
     filter: () => { toggleFilterMenu(true); syncNav('more'); },
     activity: () => { click('#btn-activity'); syncNav('more'); },
+    requests: () => { openRequestsPanel(); syncNav('more'); },
     data: () => click('#btn-data'),
     admin: () => click('#btn-admin'),
     fit: () => click('#btn-fit'),

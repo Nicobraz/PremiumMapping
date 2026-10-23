@@ -56,6 +56,7 @@
       </div>
     </div>
     <button id="btn-directory" class="btn btn-ghost" title="Everyone's contacts, with filters">Contacts</button>
+    <button id="btn-requests" class="btn btn-ghost" title="Lead transfer requests" hidden>Requests <span id="requests-count" class="count-badge"></span></button>
     <button id="btn-activity" class="btn btn-ghost" title="Recent changes">Activity</button>
     <button id="btn-data" class="btn btn-ghost" title="Import, export, backup">Data</button>
     <button id="me-chip" class="me-chip" hidden></button>
@@ -221,7 +222,7 @@
   <button type="button" data-nav="companies"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V6l7-3v17M11 20V9l9 3v8M2 20h20M7 9h1M7 13h1M7 17h1M15 14h1M15 17h1"/></svg><span>Companies</span></button>
   <button type="button" data-nav="add" class="nav-add" aria-label="Add a contact or company"><span class="plus">+</span></button>
   <button type="button" data-nav="map"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/></svg><span>Map</span></button>
-  <button type="button" data-nav="more"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span>More</span><b id="nav-filter-count" class="count-badge" hidden></b></button>
+  <button type="button" data-nav="more"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span>More</span><b id="nav-filter-count" class="count-badge" hidden></b><b id="nav-requests-dot" class="nav-dot" hidden></b></button>
 </nav>
 <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
 <div id="sheet-add" class="sheet" role="menu" hidden>
@@ -230,6 +231,7 @@
 </div>
 <div id="sheet-more" class="sheet" role="menu" hidden>
   <button type="button" class="sheet-item" data-sheet="filter">Filter the map</button>
+  <button type="button" class="sheet-item" data-sheet="requests">Transfer requests <span id="sheet-requests-count" class="count-badge" hidden></span></button>
   <button type="button" class="sheet-item" data-sheet="activity">Activity</button>
   <button type="button" class="sheet-item" data-sheet="data">Data, import &amp; export</button>
   <button type="button" class="sheet-item" data-sheet="admin">Admin settings</button>
