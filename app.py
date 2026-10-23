@@ -101,6 +101,11 @@ CREATE TABLE IF NOT EXISTS reps (
     is_admin       INTEGER NOT NULL DEFAULT 0,
     password_hash  TEXT NOT NULL DEFAULT ''
 );
+-- Wingmate records someone deliberately deleted here, so the sync doesn't bring them back.
+CREATE TABLE IF NOT EXISTS wingmate_dismissed (
+    ref  TEXT PRIMARY KEY,
+    ts   TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
@@ -568,6 +573,11 @@ def is_admin():
     return bool(fingerprint) and hmac.compare_digest(token, fingerprint)
 
 
+def dismiss_wingmate(db, ref):
+    if ref:
+        db.execute("INSERT INTO wingmate_dismissed (ref, ts) VALUES (?, ?) ON CONFLICT (ref) DO NOTHING", (ref, now()))
+
+
 # Reps may change only their own input: leads assigned to them, connections
 # they added and notes they wrote. Admins may change anything.
 def can_edit_node(node):
@@ -706,6 +716,7 @@ def delete_node(node_id):
         return bad("Not found", 404)
     if not can_edit_node(existing):
         return not_yours("leads assigned to you")
+    dismiss_wingmate(db, existing["wingmate_id"])
     db.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
     log(db, "delete", f"Deleted {existing['type']} {existing['name']}")
     bump_version(db)
@@ -854,6 +865,7 @@ def delete_note(note_id):
         return bad("Not found", 404)
     if not is_admin() and row["author"] != own_name():
         return not_yours("notes you wrote")
+    dismiss_wingmate(db, row["external_id"])
     db.execute("DELETE FROM notes WHERE id = ?", (note_id,))
     log(db, "note", f"Deleted a note on {node_name(db, row['node_id'])}")
     bump_version(db)

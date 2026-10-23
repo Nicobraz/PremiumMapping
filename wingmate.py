@@ -225,6 +225,7 @@ def run_sync(db, client, tools, dry_run=False):
         name = text(user.get("full_name") or user.get("name"))
         return rep_by_email.get(email) or rep_by_name.get(name.lower()) or name or ACTOR
 
+    dismissed = {r["ref"] for r in db.execute("SELECT ref FROM wingmate_dismissed")}
     nodes = [dict(r) for r in db.execute(
         "SELECT id, type, name, location, email, phone, title, owner_rep, company_id, wingmate_id, wingmate_seen, "
         "wingmate_sync FROM nodes")]
@@ -287,6 +288,8 @@ def run_sync(db, client, tools, dry_run=False):
             counts["skipped"] += 1
             continue
         wm_id = f"lead:{lead_id}"
+        if wm_id in dismissed:  # deleted here on purpose
+            continue
         location, full_address = address_parts(lead)
         owner = rep_for(first_id(lead.get("owner_ids")) or first_id(lead.get("worker_id")))
         seen = text(lead.get("actioned_at") or lead.get("created_at"))
@@ -328,6 +331,8 @@ def run_sync(db, client, tools, dry_run=False):
             counts["skipped"] += 1
             continue
         wm_id = f"contact:{contact_id}"
+        if wm_id in dismissed:
+            continue
         email = text(contact.get("email")).lower()
         phone = text(contact.get("phone") or contact.get("phone_number")) or custom_value(contact, "phone", "mobile", "cell")
         title = custom_value(contact, "title", "position", "role") or ("Decision maker" if contact.get("primary_contact") else "")
@@ -361,6 +366,7 @@ def run_sync(db, client, tools, dry_run=False):
         counts["notes_to_check"] = len(comment_queue)
     else:
         known = {r["external_id"] for r in db.execute("SELECT external_id FROM notes WHERE external_id <> ''")}
+        known |= dismissed
         for lead_id, node, seen in comment_queue:
             for comment in client.get_all(f"/leads/{lead_id}/comments"):
                 ext = f"wingmate-comment:{comment.get('id')}"

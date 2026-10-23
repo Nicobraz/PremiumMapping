@@ -39,6 +39,7 @@ Wingmate leads flow in automatically as companies, with their contacts as people
   - lead comments → notes, imported once each
   - lead owner → Owner rep, matched to a rep by email or name; otherwise **unassigned**
 - **What's kept:** a lead matching an existing company or person is linked, not duplicated. PSS tags, notes, connections and positions are never touched. An owner, once set, is never overwritten. A field edited in PSS stays until it changes in Wingmate. Nothing is deleted when a lead is deleted in Wingmate.
+- **Editing synced records:** synced companies, people and notes follow the same rules as everything else (the owning rep or an admin edits; anyone can tag or add notes). If someone deletes a synced company, person or note here, the sync won't bring it back.
 - **Syncing while asleep:** the free server sleeps after 15 idle minutes. To keep syncing around the clock, add the link under *Sync even when nobody has the site open* to a free scheduler such as cron-job.org, every 15 minutes.
 
 ## Run locally
