@@ -207,6 +207,21 @@
       </div>
       <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">Change password</button></div>
     </form>
+    <div id="account-ai" class="account-ai" hidden>
+      <h3>Use with Claude or ChatGPT</h3>
+      <p class="muted">Add PSS Connect to your own Claude or ChatGPT, then sign in with your PSS Connect email and password. Ask it anything about your contacts, paste a list or spreadsheet to add them, or tell it about a meeting and it updates the map as you. It can’t delete anything.</p>
+      <div class="copy-row">
+        <input id="ai-url" readonly aria-label="Connector link">
+        <button type="button" id="ai-copy" class="btn btn-sm">Copy</button>
+      </div>
+      <details>
+        <summary>How to add it</summary>
+        <p><b>Claude</b> (any plan, including free): Settings → Connectors → Add custom connector. Name it “PSS Connect”, paste the link, click Add, then Connect and sign in.</p>
+        <p><b>ChatGPT</b>: Settings → Apps → Advanced settings → turn on Developer mode, then Create app. Paste the link, choose OAuth, and sign in. Adding and editing contacts needs a ChatGPT Business or Enterprise workspace (an admin adds the app once); on Plus or Pro it may only answer questions.</p>
+      </details>
+      <p id="ai-status" class="muted"></p>
+      <div class="row-btns"><button id="ai-disconnect" type="button" class="btn btn-sm btn-danger-ghost" hidden>Disconnect my AI assistants</button></div>
+    </div>
     <div class="row-btns account-signout"><button id="btn-signout" type="button" class="btn btn-danger-ghost">Sign out</button></div>
   </section>
 </dialog>

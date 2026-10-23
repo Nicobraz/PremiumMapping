@@ -7,6 +7,7 @@ Reps sign in with their email (as listed by the admin); the admin signs in
 with a password. Every change is recorded in the activity feed.
 """
 
+import contextvars
 import csv
 import hashlib
 import hmac
@@ -27,6 +28,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory, ses
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import connector
 import wingmate
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -134,6 +136,40 @@ CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
+-- Claude / ChatGPT connector sign-ins (OAuth). Only hashes of codes and tokens are stored.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id     TEXT NOT NULL UNIQUE,
+    client_name   TEXT NOT NULL DEFAULT '',
+    redirect_uris TEXT NOT NULL DEFAULT '[]',
+    auth_method   TEXT NOT NULL DEFAULT 'none',
+    secret_hash   TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_codes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    code_hash       TEXT NOT NULL UNIQUE,
+    client_id       TEXT NOT NULL,
+    rep_id          INTEGER NOT NULL,
+    redirect_uri    TEXT NOT NULL,
+    code_challenge  TEXT NOT NULL,
+    resource        TEXT NOT NULL DEFAULT '',
+    expires_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash   TEXT NOT NULL UNIQUE,
+    kind         TEXT NOT NULL,
+    client_id    TEXT NOT NULL,
+    client_name  TEXT NOT NULL DEFAULT '',
+    rep_id       INTEGER NOT NULL,
+    pw_fp        TEXT NOT NULL DEFAULT '',
+    resource     TEXT NOT NULL DEFAULT '',
+    family       TEXT NOT NULL,
+    granted_at   INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
     value  INTEGER NOT NULL
@@ -142,6 +178,8 @@ CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_company ON nodes(company_id);
 CREATE INDEX IF NOT EXISTS idx_notes_node ON notes(node_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_family ON oauth_tokens(family);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_rep ON oauth_tokens(rep_id);
 """
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
@@ -357,7 +395,18 @@ def password_fingerprint(password_hash):
     return hashlib.sha256(f"rep|{password_hash}".encode()).hexdigest()[:24] if password_hash else ""
 
 
+# Set while Claude or ChatGPT is calling in for a rep (see connector.py):
+# {"rep_id", "pw_fp", "via"}. The assistant then acts as that rep.
+ai_caller = contextvars.ContextVar("ai_caller", default=None)
+
+
 def current_rep():
+    caller = ai_caller.get()
+    if caller:
+        rep = auth_info()["reps"].get(caller["rep_id"])
+        if not rep or not rep["active"] or not hmac.compare_digest(rep["pw_fp"], caller["pw_fp"]):
+            return None
+        return rep
     rep_id = session.get("rep_id")
     if not isinstance(rep_id, int) or not session_valid():
         return None
@@ -397,6 +446,9 @@ def bump_version(db):
 
 
 def log(db, action, summary):
+    caller = ai_caller.get()
+    if caller:
+        summary = f"{summary} (via {caller['via']})"
     db.execute("INSERT INTO activity (ts, actor, action, summary) VALUES (?, ?, ?, ?)",
                (now(), actor(), action, summary))
 
@@ -1469,6 +1521,9 @@ def restore_snapshot(db, data):
         passwords = {r["email"].strip().lower(): r["password_hash"]
                      for r in db.execute("SELECT email, password_hash FROM reps") if r["password_hash"]}
         db.execute("DELETE FROM reps")
+        # Rep ids change, so assistants connected to the old list must sign in again.
+        db.execute("DELETE FROM oauth_tokens")
+        db.execute("DELETE FROM oauth_codes")
         for rep in data["reps"]:
             name = str(rep.get("name") or "").strip()[:100] if isinstance(rep, dict) else ""
             if name:
@@ -1859,6 +1914,7 @@ def wingmate_cron():
 
 
 app.secret_key = os.environ.get("SECRET_KEY") or init_db()
+connector.install(app, sys.modules[__name__])  # Claude / ChatGPT connector at /mcp
 
 # One background sync loop per server process (the app runs a single worker).
 _CLI_COMMANDS = ("add-admin", "set-admin-password")

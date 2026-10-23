@@ -54,6 +54,30 @@ Wingmate leads flow in automatically as companies, with their contacts as people
 - **Editing synced records:** synced companies, people and notes follow the same rules as everything else (the owning rep or an admin edits; anyone can tag or add notes). If someone deletes a synced company, person or note here, the sync won't bring it back.
 - **Syncing while asleep:** the free server sleeps after 15 idle minutes. To keep syncing around the clock, add the link under *Sync even when nobody has the site open* to a free scheduler such as cron-job.org, every 15 minutes.
 
+## Claude and ChatGPT
+
+PSS Connect is also a connector (an MCP server) for Claude and ChatGPT, at
+`https://pss-connect.onrender.com/mcp`. Each rep adds it to their own Claude or ChatGPT and
+signs in with their PSS Connect email and password; the assistant then works as that rep.
+The link and step-by-step instructions are in the app under your name → *Use with Claude or ChatGPT*.
+
+- **Claude** (any plan, free accounts get one custom connector): Settings → Connectors →
+  Add custom connector → paste the link → Connect.
+- **ChatGPT**: Settings → Apps → Advanced settings → Developer mode → Create app → paste the
+  link, OAuth. Adding and editing needs a Business/Enterprise workspace (an admin adds the
+  app once for everyone); Plus/Pro may be read-only.
+
+What it can do: search and read companies, contacts, notes and connections; find how two
+records are connected; add companies and contacts (with duplicate checks); bulk-add a pasted
+list or spreadsheet (it always shows a preview first and saves only after the rep agrees);
+edit the rep's own records; add notes, company tags, connections and high priority; request
+a lead; and search Wingmate live (read-only). It cannot delete anything. The same ownership
+rules as the app apply, and its changes show in Activity marked "(via Claude)" / "(via ChatGPT)".
+
+Sign-ins last 90 days. Changing your password, being deactivated, or *Disconnect my AI
+assistants* in the account menu signs the assistant out. The free Render server can take
+up to a minute to wake up outside work hours, so the first request may be slow.
+
 ## Run locally
 
 ```bash

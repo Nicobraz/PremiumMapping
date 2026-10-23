@@ -171,7 +171,29 @@ $('#me-chip').addEventListener('click', () => {
   $('#account-email').textContent = state.me ? `Signed in as ${state.me.email}` : 'Signed in with the backup admin password.';
   $('#account-password').hidden = !state.me;
   $('#account-password').reset();
+  $('#account-ai').hidden = !state.me;
+  if (state.me) loadAiConnections();
   accountDialog.showModal();
+});
+
+async function loadAiConnections(method = 'GET') {
+  try {
+    const data = await api(method, '/api/me/ai-connections');
+    $('#ai-url').value = data.url;
+    const names = data.connections.map((c) => c.name);
+    $('#ai-status').textContent = names.length ? `Connected: ${[...new Set(names)].join(', ')}` : 'No AI assistant connected yet.';
+    $('#ai-disconnect').hidden = !names.length;
+  } catch (err) { $('#ai-status').textContent = err.message; }
+}
+$('#ai-copy').addEventListener('click', async () => {
+  const input = $('#ai-url');
+  try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand('copy'); }
+  toast('Connector link copied');
+});
+$('#ai-disconnect').addEventListener('click', async () => {
+  if (!confirm('Sign PSS Connect out of Claude and ChatGPT? You can connect again any time.')) return;
+  await loadAiConnections('DELETE');
+  toast('AI assistants disconnected');
 });
 accountDialog.addEventListener('click', (evt) => {
   if (evt.target === accountDialog || evt.target.closest('[data-close]')) accountDialog.close();

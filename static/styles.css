@@ -474,6 +474,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .rep-form .check small { font-weight: 400; color: var(--muted); }
 .rep-form .check input { width: auto; }
 .account-signout { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.account-ai { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.account-ai h3 { margin: 0 0 6px; }
+.account-ai p { margin: 0 0 8px; font-size: 13px; line-height: 1.45; }
+.account-ai .copy-row { display: flex; gap: 8px; margin: 8px 0; }
+.account-ai .copy-row input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.account-ai details { margin: 4px 0 8px; font-size: 13px; }
+.account-ai summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
 
 /* ---------- filter menu ---------- */
 .filter-wrap { position: relative; }
