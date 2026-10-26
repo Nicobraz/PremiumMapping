@@ -476,7 +476,9 @@ function placeUnpositioned() {
 
 // Org-chart layout: companies in rows across the top, each company's people in a
 // straight column beneath it (wrapping into extra columns for big companies), and
-// contacts without a company in a block at the bottom.
+// contacts without a company in a block at the bottom. Most recently added or edited
+// comes first: companies left to right (a company counts as edited when any of its
+// people is), people top to bottom.
 const ORG = { colWidth: 200, firstGap: 110, rowGap: 78, perColumn: 8, bandGap: 150 };
 
 // Tries a range of row widths and keeps the one whose overall shape best matches the screen.
@@ -493,7 +495,7 @@ function orgChartPositions() {
 
 function orgChartFor(maxWidth) {
   const nodes = [...state.nodes.values()];
-  const companies = nodes.filter((n) => n.type === 'company').sort(byName);
+  const companies = nodes.filter((n) => n.type === 'company');
   const staffOf = new Map(companies.map((c) => [c.id, []]));
   const loose = [];
   for (const n of nodes) {
@@ -501,14 +503,16 @@ function orgChartFor(maxWidth) {
     if (n.company_id != null && staffOf.has(n.company_id)) staffOf.get(n.company_id).push(n);
     else loose.push(n);
   }
-  // Priority contacts first, then by name.
-  const order = (a, b) => (b.priority || 0) - (a.priority || 0) || byName(a, b);
+  const newest = (a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || byName(a, b);
+  const latest = new Map(companies.map((c) => [c.id, staffOf.get(c.id).reduce(
+    (t, p) => (String(p.updated_at) > t ? String(p.updated_at) : t), String(c.updated_at))]));
+  companies.sort((a, b) => latest.get(b.id).localeCompare(latest.get(a.id)) || byName(a, b));
   const pos = {};
   let x = 0;
   let y = 0;
   let bandHeight = 0;
   for (const company of companies) {
-    const staff = staffOf.get(company.id).sort(order);
+    const staff = staffOf.get(company.id).sort(newest);
     const subCols = Math.max(1, Math.ceil(staff.length / ORG.perColumn));
     const width = subCols * ORG.colWidth;
     if (x > 0 && x + width > maxWidth) {  // start a new band of companies
@@ -531,7 +535,7 @@ function orgChartFor(maxWidth) {
   if (loose.length) {
     const top = companies.length ? bottom + ORG.bandGap : 0;
     const perRow = Math.max(4, Math.floor(Math.max(maxWidth, widest) / ORG.colWidth));
-    loose.sort(order).forEach((p, i) => {
+    loose.sort(newest).forEach((p, i) => {
       pos[p.id] = { x: ORG.colWidth / 2 + (i % perRow) * ORG.colWidth, y: top + Math.floor(i / perRow) * ORG.rowGap };
     });
     widest = Math.max(widest, Math.min(loose.length, perRow) * ORG.colWidth);
