@@ -925,6 +925,58 @@ def delete_edge(edge_id):
     return jsonify({"ok": True})
 
 
+@app.post("/api/nodes/<int:node_id>/company")
+def move_contact(node_id):
+    """Puts a contact at a company (an existing one, or a new one by name), or takes them
+    off their company. A move leaves a note on the contact so the history isn't lost."""
+    db = get_db()
+    person = node_row(db, node_id)
+    if not person or person["type"] != "person":
+        return bad("Not found", 404)
+    if not can_edit_node(person):
+        return not_yours("contacts assigned to you")
+    data = request.get_json(silent=True) or {}
+    company_id, name = to_int(data.get("company_id")), str(data.get("company_name") or "").strip()[:300]
+    created = False
+    if company_id is not None:
+        company = node_row(db, company_id)
+        if not company or company["type"] != "company":
+            return bad("Company not found", 404)
+    elif name:
+        target = norm_name(name, True)
+        company = next((dict(r) for r in db.execute("SELECT * FROM nodes WHERE type = 'company' ORDER BY id")
+                        if norm_name(r["name"], True) == target), None)
+        if not company:
+            ts = now()
+            new_id = db.insert("nodes", {"type": "company", "name": name, "owner_rep": person["owner_rep"] or own_name(),
+                                         "created_at": ts, "updated_at": ts, "updated_by": actor()})
+            company, created = node_row(db, new_id), True
+    elif data.get("remove"):
+        company = None
+    else:
+        return bad("Pick a company")
+    if (company or {}).get("id") == person["company_id"]:
+        return jsonify(node_row(db, node_id))
+    old = node_row(db, person["company_id"]) if person["company_id"] else None
+    db.execute("UPDATE nodes SET company_id = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+               (company["id"] if company else None, now(), actor(), node_id))
+    if old and company:
+        summary = f"Moved {person['name']} from {old['name']} to {company['name']}"
+    elif company:
+        summary = f"Added {person['name']} to {company['name']}"
+    else:
+        summary = f"Removed {person['name']} from {old['name']}"
+    if old and data.get("note", True):
+        body = f"Moved from {old['name']} to {company['name']}." if company else f"No longer at {old['name']}."
+        db.insert("notes", {"node_id": node_id, "body": body, "author": actor(), "created_at": now()})
+    if created:
+        summary += " (new company)"
+    log(db, "move", summary)
+    bump_version(db)
+    db.commit()
+    return jsonify(node_row(db, node_id))
+
+
 @app.post("/api/nodes/<int:node_id>/tags")
 def change_tags(node_id):
     """Anyone signed in can add or remove a company's tags, whoever the lead belongs to."""

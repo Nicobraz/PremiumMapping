@@ -47,6 +47,9 @@ const state = {
   ownerFilter: '',
   priorityFilter: '',
   colorPickerFor: null,
+  moveFor: null,          // contact whose "change company" box is open
+  addExistingFor: null,   // company whose "add existing contact" box is open
+  addExistingQuery: '',
   dirFilters: [],       // [{ field, value }] in the Contacts list
   stageFilter: '',
   view: storeGet('pss.view') || 'team',  // 'team', 'mine' or (admins) a rep's name
@@ -1122,7 +1125,13 @@ function canDeleteNote(note) {
 
 function actionsHtml(n) {
   const btns = [];
-  if (n.type === 'company') btns.push('<button class="btn btn-sm btn-primary" data-act="add-person-here">+ Add person</button>');
+  if (n.type === 'company') {
+    btns.push('<button class="btn btn-sm btn-primary" data-act="add-person-here">+ Add person</button>');
+    if (state.me || state.isAdmin) btns.push('<button class="btn btn-sm" data-act="add-existing" title="Put a contact who\'s already in PSS Connect at this company">+ Add existing contact</button>');
+  }
+  if (n.type === 'person' && canEditNode(n)) {
+    btns.push(`<button class="btn btn-sm" data-act="move-company">${n.company_id != null ? 'Change company' : 'Add to a company'}</button>`);
+  }
   if (n.email) btns.push(`<a class="btn btn-sm" href="mailto:${esc(n.email)}">Email</a>`);
   if (n.phone) btns.push(`<a class="btn btn-sm" href="tel:${esc(n.phone.replace(/[^\d+]/g, ''))}">Call</a>`);
   btns.push('<button class="btn btn-sm" data-act="show-map">Show on map</button>');
@@ -1301,6 +1310,75 @@ function notesSectionHtml(n) {
   </div>`;
 }
 
+// ----- moving contacts between companies -----
+
+function companyByName(name) {
+  const target = name.trim().toLowerCase();
+  return [...state.nodes.values()].find((c) => c.type === 'company' && c.name.trim().toLowerCase() === target) || null;
+}
+
+function moveBoxHtml(n) {
+  if (state.moveFor !== n.id) return '';
+  const current = companyOf(n);
+  const options = [...state.nodes.values()].filter((c) => c.type === 'company' && c.id !== n.company_id).sort(byName);
+  return `<form class="move-box" data-form="move-company">
+    <label><span>${current ? `Moving from <b>${esc(current.name)}</b> to` : `Put ${esc(n.name)} at`}</span>
+      <input name="company" list="move-company-list" required autocomplete="off" placeholder="Type or pick a company"></label>
+    <datalist id="move-company-list">${options.map((c) => `<option value="${esc(c.name)}">`).join('')}</datalist>
+    <p class="muted move-hint">Pick a company, or type a new name to add it.</p>
+    ${current ? `<label class="check"><input type="checkbox" name="note" checked> Add a note: “Moved from ${esc(current.name)}”</label>` : ''}
+    <div class="row-btns">
+      <button type="submit" class="btn btn-sm btn-primary">Save</button>
+      <button type="button" class="btn btn-sm" data-act="cancel-move">Cancel</button>
+      ${current ? `<button type="button" class="btn btn-sm btn-danger-ghost" data-act="remove-company">Remove from ${esc(current.name)}</button>` : ''}
+    </div>
+  </form>`;
+}
+
+function updateMoveHint(form) {
+  const typed = form.elements.company.value.trim();
+  const hint = form.querySelector('.move-hint');
+  const match = typed && companyByName(typed);
+  hint.textContent = !typed ? 'Pick a company, or type a new name to add it.'
+    : match ? `Existing company${match.location ? ` · ${match.location}` : ''}`
+    : `“${typed}” isn’t in PSS Connect yet. Saving adds it as a new company.`;
+}
+
+function addExistingHtml(n) {
+  if (state.addExistingFor !== n.id) return '';
+  return `<div class="add-existing">
+    <input type="search" id="add-existing-q" placeholder="Search contacts to add…" autocomplete="off" value="${esc(state.addExistingQuery)}">
+    <ul class="conn-list add-existing-list">${addExistingListHtml(n)}</ul>
+    ${state.isAdmin ? '' : '<p class="muted">Shows contacts assigned to you. Ask the owner or an admin to move anyone else.</p>'}
+    <div class="row-btns"><button type="button" class="btn btn-sm" data-act="cancel-add-existing">Done</button></div>
+  </div>`;
+}
+
+function addExistingListHtml(n) {
+  const words = state.addExistingQuery.toLowerCase().split(/\s+/).filter(Boolean);
+  const pool = [...state.nodes.values()].filter((p) => p.type === 'person' && p.company_id !== n.id && canEditNode(p));
+  const matches = pool.filter((p) => {
+    const hay = [p.name, p.title, p.email, companyOf(p)?.name].join(' ').toLowerCase();
+    return words.every((w) => hay.includes(w));
+  }).sort(byName).slice(0, 40);
+  if (!matches.length) return `<li class="muted">${pool.length ? 'No matches.' : 'No contacts to add.'}</li>`;
+  return matches.map((p) => {
+    const at = companyOf(p);
+    const detail = [p.title, at ? `at ${at.name}` : 'No company'].filter(Boolean).join(' · ');
+    return `<li>${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b><span>${esc(detail)}</span></span>
+      <button type="button" class="btn btn-sm" data-add-existing="${p.id}">${at ? 'Move here' : 'Add'}</button></li>`;
+  }).join('');
+}
+
+async function moveContact(personId, body, message) {
+  try {
+    await api('POST', `/api/nodes/${personId}/company`, body);
+    await sync();
+    rerenderCard();
+    toast(message);
+  } catch (err) { toast(err.message, true); }
+}
+
 function personCardHtml(n) {
   const company = companyOf(n);
   const rows = connectionRows(n.id);
@@ -1315,6 +1393,7 @@ function personCardHtml(n) {
     ? `<button class="hero-link" data-goto="${company.id}">${esc(company.name)} →</button>`
     : '<div class="hero-sub muted">No company</div>') + stage)
     + actionsHtml(n)
+    + moveBoxHtml(n)
     + factsHtml(n)
     + aboutHtml(n)
     + `<div class="section">
@@ -1357,13 +1436,14 @@ function companyCardHtml(n) {
   const direct = connectionRows(n.id);
   return heroHtml(n, n.location, counts)
     + actionsHtml(n)
+    + addExistingHtml(n)
     + factsHtml(n, ['Location'])
     + aboutHtml(n)
     + `<div class="section">
         <h3>People at ${esc(n.name)} <span>${staff.length}</span></h3>
         ${staff.length
           ? `<ul class="conn-list roster">${staff.map((p) => rosterRowHtml(p, staffIds)).join('')}</ul>`
-          : '<p class="muted">No one added yet. Use “+ Add person”.</p>'}
+          : '<p class="muted">No one added yet. Use “+ Add person” or “+ Add existing contact”.</p>'}
       </div>
       <div class="section">
         <h3>Company connections <span>${direct.length}</span></h3>
@@ -1379,6 +1459,8 @@ function openNodePanel(id, opts = {}) {
   if (!n) return;
   if (state.picker && state.picker.nodeId !== id) state.picker = null;
   if (state.colorPickerFor !== id) state.colorPickerFor = null;
+  if (state.moveFor !== id) state.moveFor = null;
+  if (state.addExistingFor !== id) { state.addExistingFor = null; state.addExistingQuery = ''; }
   cy.elements().unselect();
   cy.getElementById(`n${id}`).select();
   const back = opts.fromDir ? '<button class="back-link" data-act="directory">← Contacts</button>' : '';
@@ -1885,6 +1967,13 @@ panel.addEventListener('input', (evt) => {
   }
   if (evt.target.matches('.tag-add input')) { showTagSuggestions(evt.target); return; }
   if (evt.target.id === 'merge-filter') { renderMergeList(); return; }
+  if (evt.target.id === 'add-existing-q') {
+    state.addExistingQuery = evt.target.value;
+    const company = state.nodes.get(state.addExistingFor);
+    if (company) panel.querySelector('.add-existing-list').innerHTML = addExistingListHtml(company);
+    return;
+  }
+  if (evt.target.closest('.move-box')) { updateMoveHint(evt.target.form); return; }
   state.panelDirty = true;
   const nodeForm = evt.target.closest('[data-form="node"]');
   if (nodeForm && (evt.target.name === 'name' || evt.target.name === 'email')) updateDupHint(nodeForm);
@@ -1920,6 +2009,15 @@ panel.addEventListener('click', async (evt) => {
       $('#ai-admin-section').innerHTML = aiAdminHtml();
       ai.enabled = null;
     } catch (err) { toast(err.message, true); }
+    return;
+  }
+  const addBtn = evt.target.closest('[data-add-existing]');
+  if (addBtn && p?.id) {
+    const person = state.nodes.get(Number(addBtn.dataset.addExisting));
+    const company = state.nodes.get(p.id);
+    const from = companyOf(person);
+    await moveContact(person.id, { company_id: company.id, note: true },
+      from ? `Moved ${person.name} from ${from.name} to ${company.name}` : `Added ${person.name} to ${company.name}`);
     return;
   }
   const wmBtn = evt.target.closest('[data-wm-act]');
@@ -2002,6 +2100,23 @@ panel.addEventListener('click', async (evt) => {
   else if (act === 'cancel-edit') openNodePanel(p.id);
   else if (act === 'show-map') focusOn(p.id);
   else if (act === 'add-person-here') openNewNodePanel('person', p.id);
+  else if (act === 'move-company' || act === 'cancel-move') {
+    state.moveFor = act === 'move-company' && state.moveFor !== p.id ? p.id : null;
+    rerenderCard();
+    panel.querySelector('.move-box input[name="company"]')?.focus();
+  } else if (act === 'remove-company') {
+    const n = state.nodes.get(p.id);
+    const old = companyOf(n);
+    if (!confirm(`Take ${n.name} off ${old.name}? They stay in PSS Connect with no company.`)) return;
+    const note = panel.querySelector('.move-box input[name="note"]')?.checked ?? true;
+    state.moveFor = null;
+    await moveContact(n.id, { remove: true, note }, `${n.name} removed from ${old.name}`);
+  } else if (act === 'add-existing' || act === 'cancel-add-existing') {
+    state.addExistingFor = act === 'add-existing' && state.addExistingFor !== p.id ? p.id : null;
+    state.addExistingQuery = '';
+    rerenderCard();
+    if (!isPhone()) panel.querySelector('#add-existing-q')?.focus();
+  }
   else if (act === 'color') {
     state.colorPickerFor = state.colorPickerFor === p.id ? null : p.id;
     rerenderCard();
@@ -2060,7 +2175,17 @@ panel.addEventListener('submit', async (evt) => {
   const p = state.panel;
   if (submit) submit.disabled = true;  // the tag box submits on Enter and has no button
   try {
-    if (form.dataset.form === 'ai-settings') {
+    if (form.dataset.form === 'move-company') {
+      const n = state.nodes.get(p.id);
+      const typed = data.company.trim();
+      const match = companyByName(typed);
+      if (match && match.id === n.company_id) { toast(`${n.name} is already at ${match.name}`); return; }
+      const from = companyOf(n);
+      state.moveFor = null;
+      state.panelDirty = false;
+      await moveContact(n.id, { ...(match ? { company_id: match.id } : { company_name: typed }), note: 'note' in data },
+        from ? `Moved ${n.name} to ${match ? match.name : typed}` : `Added ${n.name} to ${match ? match.name : typed}`);
+    } else if (form.dataset.form === 'ai-settings') {
       state.aiAdmin = await api('POST', '/api/assistant/settings', { api_key: data.api_key });
       state.panelDirty = false;
       $('#ai-admin-section').innerHTML = aiAdminHtml();

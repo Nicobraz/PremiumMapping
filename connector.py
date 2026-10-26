@@ -836,20 +836,24 @@ def tool_update(args):
                           ("location", "location"), ("stage", "stage"), ("about", "notes")):
         if args.get(field) is not None:
             body[column] = args[field]
-    if args.get("company") is not None or args.get("company_id") is not None:
-        cid = core.to_int(args.get("company_id"))
-        if cid is None and str(args.get("company") or "").strip():
-            company = find_company(db, args["company"])
-            if not company:
-                raise ToolError(f"No company called {args['company']}. Add it first with add_company.")
-            cid = company["id"]
-        body["company_id"] = cid
     if args.get("owner") is not None:
         body["owner_rep"] = resolve_rep(db, args["owner"])
     if args.get("allow_duplicate"):
         body["allow_duplicate"] = True
-    if not body:
+    move = None
+    if args.get("company_id") is not None:
+        move = {"company_id": args["company_id"]}
+    elif args.get("company") is not None:
+        name = str(args["company"]).strip()
+        move = {"company_name": name} if name and name.lower() not in ("none", "no company") else {"remove": True}
+    if not body and move is None:
         raise ToolError("Nothing to change.")
+    data = None
+    if move is not None:
+        # Moves go through their own route so the contact keeps a note of where they were.
+        data = api_ok("POST", f"/api/nodes/{node_id}/company", move)
+    if not body:
+        return created(db, data)
     status, data = api("PATCH", f"/api/nodes/{node_id}", body)
     if status == 409:
         return duplicate_result(data, "record")
@@ -1241,7 +1245,9 @@ TOOLS = [
      "Change fields on a company or contact the rep owns (admins: any record, and the owner). "
      "Only the fields given change. For tags use update_company_tags; for dated updates use add_note.",
      schema({"id": ID, "name": S, **CONTACT_FIELDS,
-             "company": {"type": "string", "description": "Move a contact to this existing company."},
+             "company": {"type": "string", "description": "Move a contact to this company (e.g. they changed jobs). "
+                                                         "An existing company with that name is used, otherwise it's added. "
+                                                         "'none' takes them off their company. A note records the move."},
              "company_id": {"type": "integer"},
              "owner": {"type": "string", "description": "Admins only: reassign to this rep, or 'unassigned'."},
              "allow_duplicate": {"type": "boolean"}}, ["id"])),

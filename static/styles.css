@@ -900,3 +900,14 @@ body.ai-open { padding-right: 420px; }
 .ai-launch .copy-row { display: flex; gap: 8px; }
 .ai-launch .copy-row input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg); color: var(--text); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.move-box, .add-existing { margin: 0 16px 12px; padding: 12px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface-2); display: flex; flex-direction: column; gap: 8px; }
+.move-box label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.move-box input[name="company"], .add-existing input[type="search"] { padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface); color: var(--text); }
+.move-box input:focus, .add-existing input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.move-box .check { flex-direction: row; align-items: center; gap: 7px; }
+.move-box .move-hint, .add-existing p { margin: 0; font-size: 12px; }
+.add-existing-list { max-height: 280px; overflow-y: auto; margin: 0; }
+.add-existing-list li { cursor: default; }
+.add-existing-list .btn { margin-left: auto; flex-shrink: 0; }
