@@ -279,6 +279,10 @@ function graphStyle() {
       'line-style': 'dashed', 'line-dash-pattern': [4, 4], 'line-color': cssVar('--cy-works-at'), 'opacity': 1,
     } },
     { selector: 'edge[rel="competitor"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [7, 4] } },
+    // A connection that would run through someone else's dot bends around it.
+    { selector: 'edge.detour', style: {
+      'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(bend)', 'control-point-weights': 0.5,
+    } },
     { selector: 'edge.hover, edge:selected', style: { 'label': 'data(label)', 'opacity': 1, 'z-index': 10 } },
     { selector: 'node[priority = 1]', style: { 'border-width': 4, 'border-color': '#f5b301' } },
     { selector: 'node:selected', style: { 'border-width': 4, 'border-color': accent } },
@@ -341,6 +345,60 @@ function worksAtElement(person) {
     },
   };
 }
+
+// ---------- lines that would cross another dot ----------
+
+// How far a line must stay from a dot's centre (dot radius plus some room for its label).
+const clearanceOf = (node) => node.width() / 2 + 12;
+
+// The dots a line passes too close to: how much room is missing and which side of
+// the line each sits on (the sign of `side`).
+function blockersOf(edge, nodes) {
+  const a = edge.source().position();
+  const b = edge.target().position();
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (!len2) return [];
+  const found = [];
+  for (const node of nodes) {
+    if (node === edge.source() || node === edge.target()) continue;
+    const p = node.position();
+    const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+    if (t <= 0.04 || t >= 0.96) continue;
+    const side = (dx * (p.y - a.y) - dy * (p.x - a.x)) / Math.sqrt(len2);  // signed distance from the line
+    const room = clearanceOf(node) - Math.abs(side);
+    if (room > 0) found.push({ side, room, clearance: clearanceOf(node) });
+  }
+  return found;
+}
+
+function bendBlockedEdges() {
+  const nodes = cy.nodes(':visible').toArray();
+  const edges = cy.edges(':visible').filter((e) => e.data('rel') !== WORKS_AT);
+  cy.batch(() => {
+    cy.edges('.detour').forEach((e) => { if (!e.visible() || e.data('rel') === WORKS_AT) e.removeClass('detour'); });
+    edges.forEach((edge) => {
+      const blocks = blockersOf(edge, nodes);
+      if (!blocks.length) { edge.removeClass('detour'); return; }
+      // Bend toward the side with fewer dots in the way, far enough to clear the widest one.
+      // The curve's middle sits at half the control distance, hence the doubling.
+      const lean = blocks.reduce((sum, b) => sum + Math.sign(b.side) * b.room, 0);
+      const reach = Math.max(...blocks.map((b) => b.clearance + Math.max(0, Math.sign(b.side) === -Math.sign(lean || 1) ? Math.abs(b.side) : 0)));
+      // A positive control distance bends toward positive `side`, so go the other way.
+      edge.data('bend', -Math.sign(lean || 1) * 2 * (reach + 10));
+      edge.addClass('detour');
+    });
+  });
+}
+
+let bendsQueued = false;
+function scheduleBends() {
+  if (bendsQueued) return;
+  bendsQueued = true;
+  requestAnimationFrame(() => { bendsQueued = false; bendBlockedEdges(); });
+}
+cy.on('position', 'node', scheduleBends);
 
 // ---------- company tag pills ----------
 // A node label can only have one style, so company tags are small HTML pills
@@ -427,6 +485,7 @@ function render() {
     }
   });
   placeUnpositioned();
+  scheduleBends();
   refreshViewOptions();
   applyView();
   renderTagPills();
@@ -478,41 +537,91 @@ function placeUnpositioned() {
 // straight column beneath it (wrapping into extra columns for big companies), and
 // contacts without a company in a block at the bottom. Most recently added or edited
 // comes first: companies left to right (a company counts as edited when any of its
-// people is), people top to bottom.
+// people is), people top to bottom. Records that are connected are kept side by side,
+// so their lines are short and don't run through other dots.
 const ORG = { colWidth: 200, firstGap: 110, rowGap: 78, perColumn: 8, bandGap: 150 };
+
+// Orders items newest first, but walks each group of connected items together so
+// every item sits next to one it's linked to.
+function chainOrder(items, links, newer) {
+  const byId = new Map(items.map((n) => [n.id, n]));
+  const seen = new Set();
+  const out = [];
+  for (const start of [...items].sort(newer)) {
+    const stack = [start];
+    while (stack.length) {
+      const n = stack.pop();
+      if (seen.has(n.id)) continue;
+      seen.add(n.id);
+      out.push(n);
+      const next = [...(links.get(n.id) || [])].map((id) => byId.get(id))
+        .filter((m) => m && !seen.has(m.id)).sort(newer).reverse();
+      stack.push(...next);  // the newest neighbour comes off the stack first
+    }
+  }
+  return out;
+}
+
+function orgChartPlan() {
+  const nodes = [...state.nodes.values()];
+  const companyIds = new Set(nodes.filter((n) => n.type === 'company').map((n) => n.id));
+  const staffOf = new Map([...companyIds].map((id) => [id, []]));
+  const loose = [];
+  for (const n of nodes) {
+    if (n.type !== 'person') continue;
+    if (staffOf.has(n.company_id)) staffOf.get(n.company_id).push(n);
+    else loose.push(n);
+  }
+  const homeOf = (id) => {
+    const n = state.nodes.get(id);
+    if (!n) return null;
+    if (n.type === 'company') return n.id;
+    return staffOf.has(n.company_id) ? n.company_id : 'loose';
+  };
+  const peopleLinks = new Map();
+  const companyLinks = new Map();
+  const link = (map, a, b) => {
+    if (!map.has(a)) map.set(a, new Set());
+    if (!map.has(b)) map.set(b, new Set());
+    map.get(a).add(b);
+    map.get(b).add(a);
+  };
+  for (const e of state.edges.values()) {
+    const [a, b] = [homeOf(e.source_id), homeOf(e.target_id)];
+    if (a == null || b == null) continue;
+    if (a === b) link(peopleLinks, e.source_id, e.target_id);           // same company (or both loose)
+    else if (a !== 'loose' && b !== 'loose') link(companyLinks, a, b);  // across companies
+  }
+  const newest = (x, y) => String(y.updated_at).localeCompare(String(x.updated_at)) || byName(x, y);
+  const latest = new Map([...companyIds].map((id) => [id, staffOf.get(id).reduce(
+    (t, p) => (String(p.updated_at) > t ? String(p.updated_at) : t), String(state.nodes.get(id).updated_at))]));
+  const newestCompany = (x, y) => latest.get(y.id).localeCompare(latest.get(x.id)) || byName(x, y);
+  const companies = chainOrder([...companyIds].map((id) => state.nodes.get(id)), companyLinks, newestCompany);
+  return {
+    columns: companies.map((c) => ({ company: c, staff: chainOrder(staffOf.get(c.id), peopleLinks, newest) })),
+    loose: chainOrder(loose, peopleLinks, newest),
+  };
+}
 
 // Tries a range of row widths and keeps the one whose overall shape best matches the screen.
 function orgChartPositions() {
+  const plan = orgChartPlan();
   const aspect = Math.max(0.5, cy.width() / Math.max(1, cy.height()));
   let best = null;
   for (let width = 600; width <= 8000; width += 200) {
-    const layout = orgChartFor(width);
+    const layout = orgChartFor(plan, width);
     const score = Math.abs(Math.log((layout.width / Math.max(layout.height, 1)) / aspect));
     if (!best || score < best.score - 0.01) best = { ...layout, score };
   }
   return best.pos;
 }
 
-function orgChartFor(maxWidth) {
-  const nodes = [...state.nodes.values()];
-  const companies = nodes.filter((n) => n.type === 'company');
-  const staffOf = new Map(companies.map((c) => [c.id, []]));
-  const loose = [];
-  for (const n of nodes) {
-    if (n.type !== 'person') continue;
-    if (n.company_id != null && staffOf.has(n.company_id)) staffOf.get(n.company_id).push(n);
-    else loose.push(n);
-  }
-  const newest = (a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || byName(a, b);
-  const latest = new Map(companies.map((c) => [c.id, staffOf.get(c.id).reduce(
-    (t, p) => (String(p.updated_at) > t ? String(p.updated_at) : t), String(c.updated_at))]));
-  companies.sort((a, b) => latest.get(b.id).localeCompare(latest.get(a.id)) || byName(a, b));
+function orgChartFor(plan, maxWidth) {
   const pos = {};
   let x = 0;
   let y = 0;
   let bandHeight = 0;
-  for (const company of companies) {
-    const staff = staffOf.get(company.id).sort(newest);
+  for (const { company, staff } of plan.columns) {
     const subCols = Math.max(1, Math.ceil(staff.length / ORG.perColumn));
     const width = subCols * ORG.colWidth;
     if (x > 0 && x + width > maxWidth) {  // start a new band of companies
@@ -532,14 +641,14 @@ function orgChartFor(maxWidth) {
   }
   let widest = Math.max(x, ORG.colWidth);
   let bottom = y + bandHeight;
-  if (loose.length) {
-    const top = companies.length ? bottom + ORG.bandGap : 0;
+  if (plan.loose.length) {
+    const top = plan.columns.length ? bottom + ORG.bandGap : 0;
     const perRow = Math.max(4, Math.floor(Math.max(maxWidth, widest) / ORG.colWidth));
-    loose.sort(newest).forEach((p, i) => {
+    plan.loose.forEach((p, i) => {
       pos[p.id] = { x: ORG.colWidth / 2 + (i % perRow) * ORG.colWidth, y: top + Math.floor(i / perRow) * ORG.rowGap };
     });
-    widest = Math.max(widest, Math.min(loose.length, perRow) * ORG.colWidth);
-    bottom = top + Math.floor((loose.length - 1) / perRow) * ORG.rowGap;
+    widest = Math.max(widest, Math.min(plan.loose.length, perRow) * ORG.colWidth);
+    bottom = top + Math.floor((plan.loose.length - 1) / perRow) * ORG.rowGap;
   }
   return { pos, width: widest, height: bottom + ORG.rowGap };
 }
@@ -746,6 +855,7 @@ function inView(id) {
 }
 
 function applyView() {
+  scheduleBends();
   const rep = viewRep();
   state.viewSets = rep ? computeViewSets(rep) : null;
   const v = state.viewSets;
@@ -789,6 +899,7 @@ function setView(view) {
 $('#view-select').addEventListener('change', (evt) => setView(evt.target.value));
 
 function applyFilters() {
+  scheduleBends();
   const matched = activeFilterCount() ? filterMatches() : null;
   cy.batch(() => {
     cy.edges().forEach((e) => e.toggleClass('hidden-rel', state.hiddenRels.has(e.data('rel'))));
