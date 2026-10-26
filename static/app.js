@@ -438,8 +438,8 @@ function render() {
   $('#empty').hidden = state.nodes.size > 0;
 }
 
-// New nodes (and CSV imports) arrive without coordinates: put people around
-// their company and loose nodes in a grid beside the existing map.
+// New nodes (and CSV imports) arrive without coordinates: put people at the bottom of
+// their company's column and loose nodes in a grid beside the existing map.
 function placeUnpositioned() {
   const all = [...state.nodes.values()];
   const missing = all.filter((n) => !hasPos(n));
@@ -458,9 +458,10 @@ function placeUnpositioned() {
     const company = n.company_id != null ? state.nodes.get(n.company_id) : null;
     let pos;
     if (n.type === 'person' && hasPos(company)) {
-      const angle = Math.random() * Math.PI * 2;
-      const radius = 90 + Math.random() * 60;
-      pos = { x: company.x + radius * Math.cos(angle), y: company.y + radius * Math.sin(angle) };
+      // Below the lowest colleague already in the company's column.
+      const column = all.filter((o) => o !== n && o.company_id === company.id && hasPos(o) && Math.abs(o.x - company.x) < 60);
+      const lowest = column.reduce((y, o) => Math.max(y, o.y), company.y + ORG.firstGap - ORG.rowGap);
+      pos = { x: company.x, y: lowest + ORG.rowGap };
     } else {
       pos = { x: bb.x2 + 220 + (slot % cols) * 220, y: bb.y1 + Math.floor(slot / cols) * 220 };
       slot += 1;
@@ -473,21 +474,82 @@ function placeUnpositioned() {
   savePositions(updates);
 }
 
+// Org-chart layout: companies in rows across the top, each company's people in a
+// straight column beneath it (wrapping into extra columns for big companies), and
+// contacts without a company in a block at the bottom.
+const ORG = { colWidth: 200, firstGap: 110, rowGap: 78, perColumn: 8, bandGap: 150 };
+
+// Tries a range of row widths and keeps the one whose overall shape best matches the screen.
+function orgChartPositions() {
+  const aspect = Math.max(0.5, cy.width() / Math.max(1, cy.height()));
+  let best = null;
+  for (let width = 600; width <= 8000; width += 200) {
+    const layout = orgChartFor(width);
+    const score = Math.abs(Math.log((layout.width / Math.max(layout.height, 1)) / aspect));
+    if (!best || score < best.score - 0.01) best = { ...layout, score };
+  }
+  return best.pos;
+}
+
+function orgChartFor(maxWidth) {
+  const nodes = [...state.nodes.values()];
+  const companies = nodes.filter((n) => n.type === 'company').sort(byName);
+  const staffOf = new Map(companies.map((c) => [c.id, []]));
+  const loose = [];
+  for (const n of nodes) {
+    if (n.type !== 'person') continue;
+    if (n.company_id != null && staffOf.has(n.company_id)) staffOf.get(n.company_id).push(n);
+    else loose.push(n);
+  }
+  // Priority contacts first, then by name.
+  const order = (a, b) => (b.priority || 0) - (a.priority || 0) || byName(a, b);
+  const pos = {};
+  let x = 0;
+  let y = 0;
+  let bandHeight = 0;
+  for (const company of companies) {
+    const staff = staffOf.get(company.id).sort(order);
+    const subCols = Math.max(1, Math.ceil(staff.length / ORG.perColumn));
+    const width = subCols * ORG.colWidth;
+    if (x > 0 && x + width > maxWidth) {  // start a new band of companies
+      y += bandHeight + ORG.bandGap;
+      x = 0;
+      bandHeight = 0;
+    }
+    const left = x + ORG.colWidth / 2;
+    pos[company.id] = { x: left + (width - ORG.colWidth) / 2, y };
+    staff.forEach((p, i) => {
+      pos[p.id] = { x: left + Math.floor(i / ORG.perColumn) * ORG.colWidth,
+                    y: y + ORG.firstGap + (i % ORG.perColumn) * ORG.rowGap };
+    });
+    const rows = Math.min(staff.length, ORG.perColumn);
+    bandHeight = Math.max(bandHeight, rows ? ORG.firstGap + (rows - 1) * ORG.rowGap : 0);
+    x += width;
+  }
+  let widest = Math.max(x, ORG.colWidth);
+  let bottom = y + bandHeight;
+  if (loose.length) {
+    const top = companies.length ? bottom + ORG.bandGap : 0;
+    const perRow = Math.max(4, Math.floor(Math.max(maxWidth, widest) / ORG.colWidth));
+    loose.sort(order).forEach((p, i) => {
+      pos[p.id] = { x: ORG.colWidth / 2 + (i % perRow) * ORG.colWidth, y: top + Math.floor(i / perRow) * ORG.rowGap };
+    });
+    widest = Math.max(widest, Math.min(loose.length, perRow) * ORG.colWidth);
+    bottom = top + Math.floor((loose.length - 1) / perRow) * ORG.rowGap;
+  }
+  return { pos, width: widest, height: bottom + ORG.rowGap };
+}
+
 function runLayout(randomize) {
   if (!cy.nodes().length) return;
+  const target = orgChartPositions();
   const layout = cy.layout({
-    name: 'cose',
+    name: 'preset',
+    positions: (el) => target[el.data('nid')] || el.position(),
     animate: !randomize,
-    animationDuration: 700,
-    randomize: !!randomize,
+    animationDuration: 600,
     fit: true,
     padding: 50,
-    nodeRepulsion: () => 400000,
-    nodeOverlap: 20,
-    idealEdgeLength: (edge) => (edge.data('rel') === WORKS_AT ? 90 : 170),
-    edgeElasticity: (edge) => (edge.data('rel') === WORKS_AT ? 50 : 120),
-    gravity: 0.25,
-    componentSpacing: 140,
   });
   layout.one('layoutstop', () => {
     const updates = cy.nodes().map((el) => {
@@ -2767,7 +2829,7 @@ $('#btn-zoom-in').addEventListener('click', () => cy.animate({ zoom: { level: cy
 $('#btn-zoom-out').addEventListener('click', () => cy.animate({ zoom: { level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } } }, { duration: 150 }));
 $('#btn-fit').addEventListener('click', () => cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 }));
 $('#btn-layout').addEventListener('click', () => {
-  if (confirm('Auto-arrange the whole map? This moves everyone\'s nodes for the whole team.')) runLayout(false);
+  if (confirm('Arrange the whole map as an org chart (companies across the top, their people in a column under each)? This moves everyone\'s nodes for the whole team.')) runLayout(false);
 });
 $('#empty').addEventListener('click', (evt) => {
   const which = evt.target.closest('[data-empty]')?.dataset.empty;
