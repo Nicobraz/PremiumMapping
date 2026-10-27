@@ -191,16 +191,79 @@ def comment_label(comment):
     return COMMENT_TYPES.get(text(comment.get("type")), "")
 
 
+# ---------- pipeline stages ----------
+# A pipeline's stages in order, so a pipeline can sync only leads from one stage on
+# (e.g. a clients pipeline from "Follow Up - Post Job" onward).
+
+# Wingmate's fixed lead statuses, in pipeline order; used when the campaign doesn't
+# list its own stages.
+STATUS_RANK = {"fresh": 0, "received_by_sales": 1, "work_in_progress": 2, "pending_decision": 3,
+               "contract_signed": 4, "completed": 5, "hibernated": 6, "failed": 7}
+
+
+def stage_name(item):
+    if isinstance(item, dict):
+        for key in ("name", "label", "title", "status_string", "value"):
+            if text(item.get(key)):
+                return text(item.get(key))
+        return ""
+    return text(item)
+
+
+def pipeline_stages(campaign, leads):
+    """The pipeline's stage names in order: the campaign's own list when it has one,
+    otherwise the stages its leads are in, ordered by Wingmate's lead status."""
+    raw = campaign.get("lead_statuses") if isinstance(campaign, dict) else None
+    if isinstance(raw, list) and raw:
+        items = list(enumerate(raw))
+        def position(pair):
+            i, item = pair
+            if isinstance(item, dict):
+                for key in ("position", "order", "sort_order", "index", "rank"):
+                    if isinstance(item.get(key), (int, float)):
+                        return (item[key], i)
+            return (i, i)
+        names = [stage_name(item) for _, item in sorted(items, key=position)]
+        names = [n for n in names if n]
+        if names:
+            return list(dict.fromkeys(names))
+    seen = {}
+    for lead in leads:
+        name = text(lead.get("status_string"))
+        if name:
+            rank = STATUS_RANK.get(text(lead.get("status")), 99)
+            seen[name] = min(rank, seen.get(name, 99))
+    return sorted(seen, key=lambda n: (seen[n], n.lower()))
+
+
+def stages_from(stages, first):
+    """Lower-cased names of `first` and every stage after it; None means every stage."""
+    if not first:
+        return None
+    lowered = [s.lower() for s in stages]
+    if first.lower() not in lowered:
+        return {first.lower()}
+    return set(lowered[lowered.index(first.lower()):])
+
+
 # ---------- the sync ----------
 
-def run_sync(db, client, tools, dry_run=False):
+def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
     """tools: dict with norm_name, now, bump_version (from app.py, passed in to avoid
-    a circular import). Returns counts; writes nothing when dry_run is True."""
+    a circular import). Returns counts; writes nothing when dry_run is True.
+    from_stage: only bring in leads at that stage of the pipeline or later.
+    pipeline_name: names the pipeline in the activity feed when more than one is synced."""
     norm_name, now = tools["norm_name"], tools["now"]
     cid = client.campaign_id
     users = {str(u.get("id")): u for u in client.get_all(f"/campaigns/{cid}/users")}
     leads = client.get_all(f"/campaigns/{cid}/leads")
     contacts = client.get_all(f"/campaigns/{cid}/contacts")
+    held_back = set()  # leads before the starting stage, and their contacts, are left out
+    allowed = stages_from(pipeline_stages(client.campaign(), leads), from_stage) if from_stage else None
+    if allowed is not None:
+        held_back = {str(l.get("id")) for l in leads if text(l.get("status_string")).lower() not in allowed}
+        leads = [l for l in leads if str(l.get("id")) not in held_back]
+        contacts = [c for c in contacts if first_id(c.get("lead_id") or c.get("lead")) not in held_back]
     for lead in leads:  # the campaign user list can be partial; leads embed their owners and worker
         for user in (lead.get("owners") or []) + [lead.get("worker")]:
             if isinstance(user, dict) and user.get("id") is not None:
@@ -242,7 +305,7 @@ def run_sync(db, client, tools, dry_run=False):
 
     counts = {"leads": len(leads), "contacts": len(contacts), "companies_added": 0, "companies_linked": 0,
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
-              "notes_added": 0, "notes_moved": 0, "skipped": 0}
+              "notes_added": 0, "notes_moved": 0, "skipped": 0, "held_back": len(held_back)}
     ts = now()
     fake_id = [0]
 
@@ -435,7 +498,7 @@ def run_sync(db, client, tools, dry_run=False):
     changed = any(counts[k] for k in ("companies_added", "companies_linked", "companies_updated", "people_added",
                                       "people_linked", "people_updated", "notes_added", "notes_moved"))
     if changed and not dry_run:
-        summary = (f"Wingmate sync: +{counts['companies_added']} companies, +{counts['people_added']} people, "
+        summary = (f"Wingmate sync{f' ({pipeline_name})' if pipeline_name else ''}: +{counts['companies_added']} companies, +{counts['people_added']} people, "
                    f"+{counts['notes_added']} notes, "
                    + (f"{counts['notes_moved']} notes moved to contacts, " if counts["notes_moved"] else "") +
                    f"{counts['companies_updated'] + counts['people_updated']} updated, "

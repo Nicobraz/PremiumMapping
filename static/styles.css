@@ -911,3 +911,10 @@ body.ai-open { padding-right: 420px; }
 .add-existing-list { max-height: 280px; overflow-y: auto; margin: 0; }
 .add-existing-list li { cursor: default; }
 .add-existing-list .btn { margin-left: auto; flex-shrink: 0; }
+.wm-pipelines { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.wm-pipelines h4 { margin: 0 0 6px; font-size: 13px; }
+.wm-pipelines summary { cursor: pointer; font-weight: 600; font-size: 13px; margin: 6px 0; }
+.wm-pipeline-list { list-style: none; margin: 0 0 6px; padding: 0; }
+.wm-pipeline-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+.wm-stage { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
+.wm-stage select { padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-weight: 400; }

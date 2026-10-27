@@ -34,6 +34,7 @@ const state = {
   transfers: [],        // lead transfer requests
   wingmate: null,       // admin-only Wingmate connection status
   aiAdmin: null,        // admin-only AI assistant settings and usage
+  wmInspect: null,      // a pipeline being added: its stages, before saving
   wingmateEditing: false,
   isAdmin: false,
   me: null,             // the signed-in rep, from /api/me
@@ -2197,6 +2198,15 @@ panel.addEventListener('click', async (evt) => {
       from ? `Moved ${person.name} from ${from.name} to ${company.name}` : `Added ${person.name} to ${company.name}`);
     return;
   }
+  const wmRemove = evt.target.closest('[data-wm-remove]');
+  if (wmRemove) {
+    if (!confirm('Stop syncing this pipeline? Companies and people already synced stay on the map.')) return;
+    try {
+      state.wingmate = await api('DELETE', `/api/wingmate/pipelines/${encodeURIComponent(wmRemove.dataset.wmRemove)}`);
+      renderWingmateSection();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
   const wmBtn = evt.target.closest('[data-wm-act]');
   if (wmBtn) { await handleWingmateAction(wmBtn.dataset.wmAct); return; }
   const repBtn = evt.target.closest('[data-rep-act]');
@@ -2368,6 +2378,18 @@ panel.addEventListener('submit', async (evt) => {
       $('#ai-admin-section').innerHTML = aiAdminHtml();
       ai.enabled = null;
       toast('AI assistant is on');
+    } else if (form.dataset.form === 'wm-pipeline-check') {
+      const info = await api('POST', '/api/wingmate/pipelines/inspect', { token: data.token, campaign_id: data.campaign_id });
+      state.wmInspect = { ...info, token: data.token };
+      state.panelDirty = false;
+      renderWingmateSection();
+    } else if (form.dataset.form === 'wm-pipeline-save') {
+      const i = state.wmInspect;
+      state.wingmate = await api('POST', '/api/wingmate/pipelines', { token: i.token, campaign_id: i.campaign_id, from_stage: data.from_stage });
+      state.wmInspect = null;
+      state.panelDirty = false;
+      renderWingmateSection();
+      toast(`Added ${i.name || 'the pipeline'}. Use Preview, then Sync now.`);
     } else if (form.dataset.form === 'wingmate-settings') {
       state.wingmate = await api('POST', '/api/wingmate/settings', { token: data.token, campaign_id: data.campaign_id });
       state.wingmateEditing = false;
@@ -2606,6 +2628,7 @@ function wingmateCounts(r, preview) {
   const parts = WM_LABELS.filter(([key]) => r[key]).map(([key, one, many]) =>
     `${r[key]} ${(r[key] === 1 ? one : many).replace(preview ? /added|linked|updated/ : /$^/, (w) => `to be ${w}`)}`);
   if (preview && r.notes_to_check) parts.push(`notes checked on ${plural(r.notes_to_check, 'company', 'companies')}`);
+  if (r.held_back) parts.push(`${plural(r.held_back, 'lead', 'leads')} before the starting stage left out`);
   return parts.length ? parts.join(' · ') : 'Everything already up to date';
 }
 
@@ -2646,9 +2669,38 @@ function wingmateSectionHtml() {
       <button type="button" class="btn btn-sm btn-ghost" data-wm-act="edit">Settings</button>
       <button type="button" class="btn btn-sm btn-danger-ghost" data-wm-act="disconnect">Disconnect</button>
     </div>
+    ${extraPipelinesHtml(w)}
     ${w.cron_url ? `<details class="wm-cron"><summary>Sync even when nobody has the site open</summary>
       <p class="muted">The free server sleeps after 15 minutes without visitors. Add this link to a free scheduler such as cron-job.org, set to every 15 minutes, to keep syncing around the clock:</p>
       <input readonly value="${esc(w.cron_url)}" aria-label="Wingmate sync link" onclick="this.select()"></details>` : ''}`;
+}
+
+function extraPipelinesHtml(w) {
+  const list = w.extra_pipelines || [];
+  const rows = list.map((p) => `<li><span><b>${esc(p.name || p.campaign_id)}</b>
+      <span class="muted"> · ${p.from_stage ? `from “${esc(p.from_stage)}” on` : 'all stages'}</span></span>
+      <button type="button" class="link-btn" data-wm-remove="${esc(p.campaign_id)}">Remove</button></li>`).join('');
+  const i = state.wmInspect;
+  const pick = i ? `<form class="rep-form" data-form="wm-pipeline-save">
+      <p><b>${esc(i.name || i.campaign_id)}</b> · ${plural(i.leads, 'lead', 'leads')}</p>
+      <label class="wm-stage">Sync leads from this stage on
+        <select name="from_stage">
+          <option value="">All stages</option>
+          ${i.stages.map((st) => `<option value="${esc(st.name)}">${esc(st.name)} (${st.leads})</option>`).join('')}
+        </select></label>
+      <p class="muted">Stages are listed in pipeline order. Leads before the one you pick stay out of PSS Connect until they reach it.</p>
+      <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">Save pipeline</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-wm-act="cancel-pipeline">Cancel</button></div>
+    </form>` : `<form class="rep-form" data-form="wm-pipeline-check">
+      <input name="token" type="password" autocomplete="off" required placeholder="That pipeline's API token" aria-label="Pipeline API token">
+      <input name="campaign_id" required placeholder="Campaign (pipeline) ID" aria-label="Campaign ID">
+      <div class="row-btns"><button type="submit" class="btn btn-sm">Check pipeline</button></div>
+    </form>`;
+  return `<div class="wm-pipelines">
+    <h4>Other pipelines</h4>
+    ${rows ? `<ul class="wm-pipeline-list">${rows}</ul>` : '<p class="muted">Only the main pipeline syncs.</p>'}
+    <details ${i ? 'open' : ''}><summary>+ Add another pipeline</summary>${pick}</details>
+  </div>`;
 }
 
 function renderWingmateSection() {
@@ -2680,7 +2732,10 @@ async function loadWingmate() {
 
 async function handleWingmateAction(act) {
   try {
-    if (act === 'edit' || act === 'cancel-edit') {
+    if (act === 'cancel-pipeline') {
+      state.wmInspect = null;
+      renderWingmateSection();
+    } else if (act === 'edit' || act === 'cancel-edit') {
       state.wingmateEditing = act === 'edit';
       state.panelDirty = false;
       renderWingmateSection();

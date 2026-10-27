@@ -1859,6 +1859,32 @@ def wingmate_client(db):
     return wingmate.WingmateClient(token, campaign_id) if token and campaign_id else None
 
 
+# Besides the main pipeline, an admin can add more Wingmate pipelines (each has its own
+# token), optionally syncing only leads from a given stage on.
+def extra_pipelines(db):
+    try:
+        items = json.loads(get_setting(db, "wingmate_extra_pipelines") or "[]")
+    except ValueError:
+        items = []
+    return [p for p in items if isinstance(p, dict) and p.get("token") and p.get("campaign_id")]
+
+
+def save_extra_pipelines(db, items):
+    set_setting(db, "wingmate_extra_pipelines", json.dumps(items))
+
+
+def wingmate_pipelines(db):
+    """Every connected pipeline as (settings, client), the main one first."""
+    out = []
+    main = wingmate_client(db)
+    if main:
+        out.append(({"campaign_id": main.campaign_id, "name": get_setting(db, "wingmate_campaign_name"),
+                     "from_stage": "", "main": True}, main))
+    for p in extra_pipelines(db):
+        out.append((p, wingmate.WingmateClient(p["token"], p["campaign_id"])))
+    return out
+
+
 SYNC_TOOLS = {"norm_name": lambda name, is_company=False: norm_name(name, is_company),
               "now": lambda: now(), "bump_version": lambda db: bump_version(db)}
 
@@ -1871,12 +1897,23 @@ def run_wingmate_sync(dry_run=False):
     try:
         with app.app_context():
             db = get_db()
-            client = wingmate_client(db)
-            if client is None:
+            pipelines = wingmate_pipelines(db)
+            if not pipelines:
                 return {"ok": False, "error": "Wingmate isn't connected yet."}
             started = now()
             try:
-                result = {"ok": True, "at": started, **wingmate.run_sync(db, client, SYNC_TOOLS, dry_run)}
+                totals = {}
+                for settings, client in pipelines:
+                    name = (settings.get("name") or settings["campaign_id"]) if len(pipelines) > 1 else ""
+                    try:
+                        counts = wingmate.run_sync(db, client, SYNC_TOOLS, dry_run,
+                                                   from_stage=settings.get("from_stage") or "", pipeline_name=name)
+                    except wingmate.WingmateError as e:
+                        raise wingmate.WingmateError(f"{name}: {e}" if name else str(e)) from None
+                    for key, value in counts.items():
+                        if isinstance(value, (int, float)):
+                            totals[key] = totals.get(key, 0) + value
+                result = {"ok": True, "at": started, **totals}
             except wingmate.WingmateError as e:
                 db.conn.rollback()
                 result = {"ok": False, "at": started, "error": str(e)}
@@ -1908,7 +1945,7 @@ def _wingmate_loop():
     while True:
         try:
             with app.app_context():
-                connected = wingmate_client(get_db()) is not None
+                connected = bool(wingmate_pipelines(get_db()))
             if connected:
                 run_wingmate_sync()
         except Exception:
@@ -1930,6 +1967,8 @@ def wingmate_status(db):
         "running": _wingmate_state["running"],
         "interval_minutes": WINGMATE_INTERVAL // 60,
         "cron_url": f"{request.host_url}api/wingmate/cron?key={cron_key}" if cron_key else "",
+        "extra_pipelines": [{"campaign_id": p["campaign_id"], "name": p.get("name", ""), "from_stage": p.get("from_stage", ""),
+                             "token_hint": f"…{p['token'][-4:]}"} for p in extra_pipelines(db)],
     }
 
 
@@ -1968,11 +2007,82 @@ def save_wingmate_settings():
     return jsonify(wingmate_status(db))
 
 
+def inspect_pipeline(token, campaign_id):
+    """The pipeline's name and its stages in order, with how many leads are in each."""
+    client = wingmate.WingmateClient(token, campaign_id)
+    campaign = client.campaign()
+    leads = client.get_all(f"/campaigns/{client.campaign_id}/leads")
+    stages = wingmate.pipeline_stages(campaign, leads)
+    counts = {}
+    for lead in leads:
+        name = wingmate.text(lead.get("status_string"))
+        counts[name] = counts.get(name, 0) + 1
+    return {"campaign_id": client.campaign_id, "name": str(campaign.get("name") or ""), "leads": len(leads),
+            "stages": [{"name": st, "leads": counts.get(st, 0)} for st in stages]}
+
+
+@app.post("/api/wingmate/pipelines/inspect")
+@admin_only
+def inspect_wingmate_pipeline():
+    data = request.get_json(silent=True) or {}
+    token, campaign_id = str(data.get("token") or "").strip(), str(data.get("campaign_id") or "").strip()
+    if not token or not campaign_id:
+        return bad("Enter the pipeline's API token and campaign ID")
+    try:
+        return jsonify(inspect_pipeline(token, campaign_id))
+    except wingmate.WingmateError as e:
+        return bad(str(e))
+
+
+@app.post("/api/wingmate/pipelines")
+@admin_only
+def add_wingmate_pipeline():
+    data = request.get_json(silent=True) or {}
+    db = get_db()
+    campaign_id = str(data.get("campaign_id") or "").strip()
+    existing = next((p for p in extra_pipelines(db) if p["campaign_id"] == campaign_id), None)
+    token = str(data.get("token") or "").strip() or (existing or {}).get("token", "")
+    if not token or not campaign_id:
+        return bad("Enter the pipeline's API token and campaign ID")
+    if campaign_id == get_setting(db, "wingmate_campaign_id"):
+        return bad("That's already the main pipeline")
+    try:
+        info = inspect_pipeline(token, campaign_id)
+    except wingmate.WingmateError as e:
+        return bad(str(e))
+    from_stage = str(data.get("from_stage") or "").strip()
+    if from_stage and from_stage.lower() not in {st["name"].lower() for st in info["stages"]}:
+        return bad(f"“{from_stage}” isn't a stage in that pipeline")
+    items = [p for p in extra_pipelines(db) if p["campaign_id"] != campaign_id]
+    items.append({"token": token, "campaign_id": campaign_id, "name": info["name"], "from_stage": from_stage})
+    save_extra_pipelines(db, items)
+    if not get_setting(db, "wingmate_cron_key"):
+        set_setting(db, "wingmate_cron_key", secrets.token_urlsafe(24))
+    where = f" from “{from_stage}” on" if from_stage else ""
+    log(db, "wingmate", f"Connected Wingmate pipeline {info['name'] or campaign_id}{where}")
+    db.commit()
+    return jsonify(wingmate_status(db))
+
+
+@app.delete("/api/wingmate/pipelines/<campaign_id>")
+@admin_only
+def remove_wingmate_pipeline(campaign_id):
+    db = get_db()
+    items = extra_pipelines(db)
+    gone = next((p for p in items if p["campaign_id"] == campaign_id), None)
+    if not gone:
+        return bad("Not found", 404)
+    save_extra_pipelines(db, [p for p in items if p["campaign_id"] != campaign_id])
+    log(db, "wingmate", f"Disconnected Wingmate pipeline {gone.get('name') or campaign_id}")
+    db.commit()
+    return jsonify(wingmate_status(db))
+
+
 @app.post("/api/wingmate/sync")
 @admin_only
 def trigger_wingmate_sync():
     dry_run = bool((request.get_json(silent=True) or {}).get("dry_run"))
-    if wingmate_client(get_db()) is None:
+    if not wingmate_pipelines(get_db()):
         return bad("Connect Wingmate first")
     if not start_wingmate_sync(dry_run):
         return bad("A Wingmate sync is already running", 409)
@@ -1995,7 +2105,7 @@ REFRESH_COOLDOWN_SECS = 60
 
 def wingmate_refresh_status(db):
     last = get_setting(db, "wingmate_last_result")
-    return {"connected": wingmate_client(db) is not None, "running": _wingmate_state["running"] == "sync",
+    return {"connected": bool(wingmate_pipelines(db)), "running": _wingmate_state["running"] == "sync",
             "last": json.loads(last) if last else None}
 
 

@@ -601,7 +601,7 @@ def tool_overview(args):
     transfers = [dict(r) for r in db.execute("SELECT * FROM transfer_requests WHERE status = 'pending'")]
     mine_in = [t for t in transfers if t["from_rep"] == rep["name"] or (rep["is_admin"] and not t["from_rep"])]
     mine_out = [t for t in transfers if t["to_rep"] == rep["name"]]
-    wm = core.wingmate_client(db)
+    pipelines = core.wingmate_pipelines(db)
     return {
         "you": {"name": rep["name"], "email": rep["email"], "admin": bool(rep["is_admin"])},
         "totals": {"companies": len(companies), "contacts": len(people),
@@ -618,8 +618,9 @@ def tool_overview(args):
              "requested_by": t["to_rep"], "reason": t["reason"]} for t in mine_in],
         "your_pending_requests": [{"id": t["id"], "lead": nodes.get(t["node_id"], {}).get("name", "?"),
                                    "owner": t["from_rep"] or "unassigned"} for t in mine_out],
-        "wingmate": ({"connected": True, "pipeline": core.get_setting(db, "wingmate_campaign_name") or "connected"}
-                     if wm else {"connected": False}),
+        "wingmate": {"connected": bool(pipelines),
+                     "pipelines": [(p.get("name") or p["campaign_id"]) + (f" (from {p['from_stage']} on)" if p.get("from_stage") else "")
+                                   for p, _ in pipelines]},
         "app_url": base_url(),
     }
 
@@ -1039,29 +1040,36 @@ WM_CACHE_SECS = 300
 
 
 def wingmate_data(db):
-    client = core.wingmate_client(db)
-    if client is None:
+    """Leads, contacts and users from every connected pipeline. Returns (client for each
+    lead id, data); each lead is tagged with its pipeline's name."""
+    pipelines = core.wingmate_pipelines(db)
+    if not pipelines:
         raise ToolError("Wingmate isn't connected to PSS Connect. An admin connects it under ⚙ → Wingmate.")
+    key = tuple(sorted(c.campaign_id for _, c in pipelines))
     with _wm_lock:
-        cached = _wm_cache["data"] if _wm_cache["key"] == client.campaign_id \
-            and time.time() - _wm_cache["at"] < WM_CACHE_SECS else None
+        cached = _wm_cache["data"] if _wm_cache["key"] == key and time.time() - _wm_cache["at"] < WM_CACHE_SECS else None
     if cached:
-        return client, cached
-    cid = client.campaign_id
-    try:
-        users = {str(u.get("id")): u for u in client.get_all(f"/campaigns/{cid}/users")}
-        leads = client.get_all(f"/campaigns/{cid}/leads")
-        contacts = client.get_all(f"/campaigns/{cid}/contacts")
-    except wingmate.WingmateError as e:
-        raise ToolError(str(e)) from None
-    for lead in leads:
-        for user in (lead.get("owners") or []) + [lead.get("worker")]:
-            if isinstance(user, dict) and user.get("id") is not None:
-                users.setdefault(str(user["id"]), user)
-    data = {"users": users, "leads": leads, "contacts": contacts}
+        return cached
+    users, leads, contacts, client_for_lead = {}, [], [], {}
+    for settings, client in pipelines:
+        cid = client.campaign_id
+        try:
+            users.update({str(u.get("id")): u for u in client.get_all(f"/campaigns/{cid}/users")})
+            batch = client.get_all(f"/campaigns/{cid}/leads")
+            contacts += client.get_all(f"/campaigns/{cid}/contacts")
+        except wingmate.WingmateError as e:
+            raise ToolError(str(e)) from None
+        for lead in batch:
+            lead["_pipeline"] = settings.get("name") or cid
+            client_for_lead[str(lead.get("id"))] = client
+            for user in (lead.get("owners") or []) + [lead.get("worker")]:
+                if isinstance(user, dict) and user.get("id") is not None:
+                    users.setdefault(str(user["id"]), user)
+        leads += batch
+    result = (client_for_lead, {"users": users, "leads": leads, "contacts": contacts})
     with _wm_lock:
-        _wm_cache.update(key=cid, at=time.time(), data=data)
-    return client, data
+        _wm_cache.update(key=key, at=time.time(), data=result)
+    return result
 
 
 def wm_user(data, user_id):
@@ -1101,7 +1109,7 @@ def pss_links(db):
 def wm_lead_brief(db, data, lead, contacts, links):
     lead_id = str(lead.get("id"))
     _, address = wingmate.address_parts(lead)
-    out = {"lead_id": lead_id, "name": wingmate.text(lead.get("name")),
+    out = {"lead_id": lead_id, "name": wingmate.text(lead.get("name")), "pipeline": lead.get("_pipeline", ""),
            "status": wingmate.text(lead.get("status_string")), "address": address,
            "owners": wm_owners(data, lead), "contacts": [wm_contact(c) for c in contacts],
            "last_activity": wingmate.text(lead.get("actioned_at"))[:10],
@@ -1154,11 +1162,12 @@ def tool_wm_search(args):
 
 def tool_wm_lead(args):
     db = core.get_db()
-    client, data = wingmate_data(db)
+    clients, data = wingmate_data(db)
     lead_id = str(args.get("lead_id") or "").strip()
     lead = next((l for l in data["leads"] if str(l.get("id")) == lead_id), None)
     if not lead:
-        raise ToolError("No lead with that id in the connected Wingmate pipeline. Use search_wingmate.")
+        raise ToolError("No lead with that id in the connected Wingmate pipelines. Use search_wingmate.")
+    client = clients[lead_id]
     out = wm_lead_brief(db, data, lead, contacts_by_lead(data).get(lead_id, []), pss_links(db))
     try:
         comments = client.get_all(f"/leads/{lead_id}/comments")

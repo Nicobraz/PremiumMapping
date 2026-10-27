@@ -45,6 +45,7 @@ The site switches to a phone layout built for looking things up and adding conta
 Wingmate leads flow in automatically as companies, with their contacts as people and lead comments as notes. The sync is one-way: nothing is sent back to Wingmate.
 
 - **Setup (admin):** ⚙ → **Wingmate**. Paste the Pipeline API token (Wingmate article *Retrieving your Pipeline API Access Token*, which needs the API Access & Integrations add-on) and the campaign/pipeline ID. Then click **Connect**, **Preview** to see what would change, and **Sync now**. After that it runs every 15 minutes while the site is awake.
+- **More pipelines (admin):** ⚙ → Wingmate → *Other pipelines* → **+ Add another pipeline**. Paste that pipeline's API token and campaign ID and click **Check pipeline** to see its stages in pipeline order with how many leads are in each. Choose **Sync leads from this stage on** (e.g. a clients pipeline from *Follow Up - Post Job* on) or *All stages*, then **Save pipeline**, **Preview** and **Sync now**. Leads before the chosen stage stay out until they reach it; nothing already synced is removed. Every pipeline syncs together, and Claude/ChatGPT's Wingmate lookups search them all.
 - **Sync now (any rep):** the **↻ Wingmate** button in the top bar (on phones: More → Sync with Wingmate) brings in what was just added in Wingmate without waiting for the 15-minute sync. If a sync finished in the last minute it just says you're up to date.
 - **Mapping:**
   - lead → company (name, city/state from the address; address and description go in About)
