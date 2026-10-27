@@ -248,22 +248,21 @@ def stages_from(stages, first):
 
 # ---------- the sync ----------
 
-def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
+def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=""):
     """tools: dict with norm_name, now, bump_version (from app.py, passed in to avoid
     a circular import). Returns counts; writes nothing when dry_run is True.
-    from_stage: only bring in leads at that stage of the pipeline or later.
+    map_from_stage: every lead comes in, but only leads at that stage of the pipeline or later
+    (and their contacts) go on the map; the rest are saved off the map until they reach it.
     pipeline_name: names the pipeline in the activity feed when more than one is synced."""
     norm_name, now = tools["norm_name"], tools["now"]
     cid = client.campaign_id
     users = {str(u.get("id")): u for u in client.get_all(f"/campaigns/{cid}/users")}
     leads = client.get_all(f"/campaigns/{cid}/leads")
     contacts = client.get_all(f"/campaigns/{cid}/contacts")
-    held_back = set()  # leads before the starting stage, and their contacts, are left out
-    allowed = stages_from(pipeline_stages(client.campaign(), leads), from_stage) if from_stage else None
+    held_back = set()  # leads before the map stage: saved, but kept off the map
+    allowed = stages_from(pipeline_stages(client.campaign(), leads), map_from_stage) if map_from_stage else None
     if allowed is not None:
         held_back = {str(l.get("id")) for l in leads if text(l.get("status_string")).lower() not in allowed}
-        leads = [l for l in leads if str(l.get("id")) not in held_back]
-        contacts = [c for c in contacts if first_id(c.get("lead_id") or c.get("lead")) not in held_back]
     for lead in leads:  # the campaign user list can be partial; leads embed their owners and worker
         for user in (lead.get("owners") or []) + [lead.get("worker")]:
             if isinstance(user, dict) and user.get("id") is not None:
@@ -291,7 +290,7 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
     dismissed = {r["ref"] for r in db.execute("SELECT ref FROM wingmate_dismissed")}
     nodes = [dict(r) for r in db.execute(
         "SELECT id, type, name, location, email, phone, title, stage, owner_rep, company_id, wingmate_id, "
-        "wingmate_seen, wingmate_sync FROM nodes")]
+        "wingmate_seen, wingmate_sync, off_map FROM nodes")]
     by_wm = {n["wingmate_id"]: n for n in nodes if n["wingmate_id"]}
     companies_by_name = {}
     people_by_key, people_by_email = {}, {}
@@ -305,7 +304,7 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
 
     counts = {"leads": len(leads), "contacts": len(contacts), "companies_added": 0, "companies_linked": 0,
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
-              "notes_added": 0, "notes_moved": 0, "skipped": 0, "held_back": len(held_back)}
+              "notes_added": 0, "notes_moved": 0, "skipped": 0, "off_map": len(held_back), "put_on_map": 0}
     ts = now()
     fake_id = [0]
 
@@ -342,6 +341,18 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
         update(node, {**changes, "wingmate_sync": json.dumps(snapshot, sort_keys=True)})
         return bool(visible)
 
+    def reached_map(node, held):
+        """Records the sync kept off the map go on it once their lead reaches the map stage.
+        Ones a rep took off the map stay off."""
+        try:
+            snapshot = json.loads(node.get("wingmate_sync") or "{}")
+        except ValueError:
+            return
+        if held or not snapshot.pop("off_map", None):
+            return
+        counts["put_on_map"] += bool(node.get("off_map"))
+        update(node, {"off_map": 0, "wingmate_sync": json.dumps(snapshot, sort_keys=True)})
+
     # Leads -> companies. Two reps' leads for the same company share one company here:
     # the first lead "owns" it (wingmate_id); later ones are recorded as aliases.
     aliases = {r["ref"]: (r["node_id"], r["seen"]) for r in db.execute("SELECT ref, node_id, seen FROM wingmate_aliases")}
@@ -361,6 +372,7 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
         lead_owner[lead_id] = owner
         lead_stage[lead_id] = text(lead.get("status_string"))
         seen = text(lead.get("actioned_at") or lead.get("created_at"))
+        held = lead_id in held_back
         fresh = False
         node = by_wm.get(wm_id)
         if node is None and wm_id in aliases and aliases[wm_id][0] in by_id:
@@ -385,7 +397,9 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
                                               text(lead.get("description"), 5000)) if p)
                 values = {"type": "company", "name": name, "location": location, "notes": about,
                           "owner_rep": owner, "wingmate_id": wm_id, "wingmate_seen": "",
-                          "wingmate_sync": json.dumps({"name": name, "location": location}, sort_keys=True),
+                          "wingmate_sync": json.dumps({"name": name, "location": location,
+                                                       **({"off_map": 1} if held else {})}, sort_keys=True),
+                          "off_map": 1 if held else 0,
                           "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
                 node = {**values, "id": insert(values), "email": "", "phone": "", "title": "", "company_id": None}
                 companies_by_name[norm_name(name, True)] = node
@@ -397,6 +411,7 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
             if owner and not node["owner_rep"]:
                 changed = update(node, {"owner_rep": owner}) or changed
             counts["companies_updated"] += changed
+        reached_map(node, held)
         lead_nodes[lead_id] = node
         # Re-read comments only when the lead has new activity (or no timestamp to tell).
         last_seen = node.get("wingmate_seen") if primary else aliases.get(wm_id, (None, ""))[1]
@@ -420,6 +435,7 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
         phone = text(contact.get("phone") or contact.get("phone_number")) or custom_value(contact, "phone", "mobile", "cell")
         title = custom_value(contact, "title", "position", "role") or ("Decision maker" if contact.get("primary_contact") else "")
         stage = lead_stage.get(lead_id, "")
+        held = lead_id in held_back
         node = by_wm.get(wm_id)
         merged_into = aliases.get(wm_id)
         if node is None and merged_into and merged_into[0] in by_id:
@@ -443,8 +459,9 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
                 if dry_run and company["id"] < 0:
                     values["company_id"] = None  # the company doesn't exist yet in a preview
                 values["stage"] = stage
-                values["wingmate_sync"] = json.dumps({"name": name, "email": email, "phone": phone, "stage": stage},
-                                                     sort_keys=True)
+                values["wingmate_sync"] = json.dumps({"name": name, "email": email, "phone": phone, "stage": stage,
+                                                      **({"off_map": 1} if held else {})}, sort_keys=True)
+                values["off_map"] = 1 if held else 0
                 node = {**values, "id": insert(values)}
                 people_by_key[(norm_name(name), company["id"])] = node
                 if email:
@@ -453,6 +470,7 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
             by_wm[wm_id] = node
         else:
             counts["people_updated"] += sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage})
+        reached_map(node, held)
         lead_contacts.setdefault(lead_id, []).append((bool(contact.get("primary_contact")), node))
 
     def note_target(lead_id, company):
@@ -496,13 +514,14 @@ def run_sync(db, client, tools, dry_run=False, from_stage="", pipeline_name=""):
                 db.execute("UPDATE wingmate_aliases SET seen = ? WHERE ref = ?", (seen, f"lead:{lead_id}"))
 
     changed = any(counts[k] for k in ("companies_added", "companies_linked", "companies_updated", "people_added",
-                                      "people_linked", "people_updated", "notes_added", "notes_moved"))
+                                      "people_linked", "people_updated", "notes_added", "notes_moved", "put_on_map"))
     if changed and not dry_run:
         summary = (f"Wingmate sync{f' ({pipeline_name})' if pipeline_name else ''}: +{counts['companies_added']} companies, +{counts['people_added']} people, "
                    f"+{counts['notes_added']} notes, "
                    + (f"{counts['notes_moved']} notes moved to contacts, " if counts["notes_moved"] else "") +
                    f"{counts['companies_updated'] + counts['people_updated']} updated, "
-                   f"{counts['companies_linked'] + counts['people_linked']} linked")
+                   f"{counts['companies_linked'] + counts['people_linked']} linked"
+                   + (f", {counts['put_on_map']} put on the map" if counts["put_on_map"] else ""))
         db.execute("INSERT INTO activity (ts, actor, action, summary) VALUES (?, ?, ?, ?)",
                    (ts, ACTOR, "sync", summary))
         tools["bump_version"](db)

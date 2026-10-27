@@ -918,3 +918,14 @@ body.ai-open { padding-right: 420px; }
 .wm-pipeline-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
 .wm-stage { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
 .wm-stage select { padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-weight: 400; }
+
+/* ---------- records kept off the map ---------- */
+.off-map-note {
+  margin: 8px 16px 0; padding: 7px 10px; border-radius: 8px; background: var(--surface-2);
+  border: 1px dashed var(--border); color: var(--muted); font-size: 12.5px;
+}
+.off-map-chip {
+  display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px; vertical-align: 1px;
+  border: 1px dashed var(--border); color: var(--muted); font-size: 10.5px; font-weight: 600;
+}
+.conn-list .who .off-map-chip { display: inline-block; font-size: 10.5px; }

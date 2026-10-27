@@ -45,7 +45,7 @@ NODE_TYPES = ("company", "person")
 REL_TYPES = ("knows", "reports_to", "referred", "partner", "vendor", "competitor", "other")
 NODE_TEXT_FIELDS = ("name", "title", "email", "phone", "location", "tags", "owner_rep", "notes", "stage")
 NODE_COLUMNS = ("id", "type", "company_id", "x", "y", "created_at", "updated_at", "updated_by",
-                "wingmate_id", "wingmate_seen", "wingmate_sync", "color", "priority") + NODE_TEXT_FIELDS
+                "wingmate_id", "wingmate_seen", "wingmate_sync", "color", "priority", "off_map") + NODE_TEXT_FIELDS
 EDGE_COLUMNS = ("id", "source_id", "target_id", "rel_type", "strength", "notes",
                 "created_at", "updated_at", "updated_by")
 
@@ -293,6 +293,8 @@ MIGRATIONS = [  # (table, column, definition, backfill SQL run once when the col
     # Shared card color (blank = automatic) and the high-priority flag (contacts).
     ("nodes", "color", "TEXT NOT NULL DEFAULT ''", None),
     ("nodes", "priority", "INTEGER NOT NULL DEFAULT 0", None),
+    # Saved and searchable but not drawn on the map (e.g. Wingmate leads before a pipeline's map stage).
+    ("nodes", "off_map", "INTEGER NOT NULL DEFAULT 0", None),
 ]
 
 
@@ -1114,6 +1116,8 @@ def change_display(node_id):
         changes["priority"] = 1 if data["priority"] else 0
         summary = (f"Marked {node['name']} high priority" if changes["priority"]
                    else f"Removed high priority from {node['name']}")
+    if "on_map" in data:
+        return show_on_map(db, node, bool(data["on_map"]))
     if not changes:
         return bad("Nothing to change")
     if any(node[k] != v for k, v in changes.items()):
@@ -1124,6 +1128,23 @@ def change_display(node_id):
         bump_version(db)
         db.commit()
     return jsonify(node_row(db, node_id))
+
+
+def show_on_map(db, node, on):
+    """Puts a record on the map or takes it off. A company takes its contacts with it;
+    a contact brings its company onto the map too."""
+    ids = [node["id"]]
+    if node["type"] == "company":
+        ids += [r["id"] for r in db.execute("SELECT id FROM nodes WHERE company_id = ?", (node["id"],))]
+    elif on and node["company_id"]:
+        ids.append(node["company_id"])
+    marks = ", ".join("?" for _ in ids)
+    db.execute(f"UPDATE nodes SET off_map = ?, updated_at = ?, updated_by = ? WHERE id IN ({marks})",
+               (0 if on else 1, now(), actor(), *ids))
+    log(db, "display", f"{'Put' if on else 'Took'} {node['name']} {'on' if on else 'off'} the map")
+    bump_version(db)
+    db.commit()
+    return jsonify(node_row(db, node["id"]))
 
 
 # ---------- merging contacts ----------
@@ -1630,6 +1651,7 @@ def restore_snapshot(db, data):
         row["wingmate_sync"] = str(row["wingmate_sync"] or "")
         row["color"] = str(row["color"] or "")
         row["priority"] = 1 if row["priority"] else 0
+        row["off_map"] = 1 if row["off_map"] else 0
         db.insert("nodes", row)
     restored_edges = 0
     for e in edges:
@@ -1907,7 +1929,7 @@ def run_wingmate_sync(dry_run=False):
                     name = (settings.get("name") or settings["campaign_id"]) if len(pipelines) > 1 else ""
                     try:
                         counts = wingmate.run_sync(db, client, SYNC_TOOLS, dry_run,
-                                                   from_stage=settings.get("from_stage") or "", pipeline_name=name)
+                                                   map_from_stage=settings.get("from_stage") or "", pipeline_name=name)
                     except wingmate.WingmateError as e:
                         raise wingmate.WingmateError(f"{name}: {e}" if name else str(e)) from None
                     for key, value in counts.items():
@@ -2058,7 +2080,7 @@ def add_wingmate_pipeline():
     save_extra_pipelines(db, items)
     if not get_setting(db, "wingmate_cron_key"):
         set_setting(db, "wingmate_cron_key", secrets.token_urlsafe(24))
-    where = f" from “{from_stage}” on" if from_stage else ""
+    where = f", on the map from “{from_stage}” on" if from_stage else ""
     log(db, "wingmate", f"Connected Wingmate pipeline {info['name'] or campaign_id}{where}")
     db.commit()
     return jsonify(wingmate_status(db))

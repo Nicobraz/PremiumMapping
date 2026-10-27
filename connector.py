@@ -560,6 +560,8 @@ def brief(n, nodes):
             out[field] = n[field]
     if n["type"] == "company" and n["tags"]:
         out["tags"] = [t.strip() for t in n["tags"].split(",") if t.strip()]
+    if n.get("off_map"):
+        out["on_map"] = False
     out["owner"] = n["owner_rep"] or "unassigned"
     if n["wingmate_id"]:
         out["from_wingmate"] = True
@@ -619,7 +621,7 @@ def tool_overview(args):
         "your_pending_requests": [{"id": t["id"], "lead": nodes.get(t["node_id"], {}).get("name", "?"),
                                    "owner": t["from_rep"] or "unassigned"} for t in mine_out],
         "wingmate": {"connected": bool(pipelines),
-                     "pipelines": [(p.get("name") or p["campaign_id"]) + (f" (from {p['from_stage']} on)" if p.get("from_stage") else "")
+                     "pipelines": [(p.get("name") or p["campaign_id"]) + (f" (all contacts; on the map from {p['from_stage']} on)" if p.get("from_stage") else "")
                                    for p, _ in pipelines]},
         "app_url": base_url(),
     }
@@ -847,6 +849,10 @@ def tool_update(args):
     elif args.get("company") is not None:
         name = str(args["company"]).strip()
         move = {"company_name": name} if name and name.lower() not in ("none", "no company") else {"remove": True}
+    if args.get("on_map") is not None:
+        data = api_ok("POST", f"/api/nodes/{node_id}/display", {"on_map": bool(args["on_map"])})
+        if not body and move is None:
+            return created(db, data)
     if not body and move is None:
         raise ToolError("Nothing to change.")
     data = None
@@ -1259,6 +1265,8 @@ TOOLS = [
                                                          "'none' takes them off their company. A note records the move."},
              "company_id": {"type": "integer"},
              "owner": {"type": "string", "description": "Admins only: reassign to this rep, or 'unassigned'."},
+             "on_map": {"type": "boolean", "description": "Put the record on the map (true) or keep it saved but off "
+                                                          "the map (false). Anyone can. A company takes its contacts with it."},
              "allow_duplicate": {"type": "boolean"}}, ["id"])),
     ("add_note", "Add a note", WRITE, tool_add_note,
      "Add a dated note to any company or contact (meeting recap, call summary, next steps). Anyone can.",

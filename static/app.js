@@ -55,6 +55,7 @@ const state = {
   stageFilter: '',
   view: storeGet('pss.view') || 'team',  // 'team', 'mine' or (admins) a rep's name
   viewSets: null,       // { visible, context } node ids when a rep view is on
+  mapIds: null,         // node ids drawn on the map (the rest are saved off the map)
   tagFilter: '',
   cityFilter: '',
   firstLoad: true,
@@ -410,7 +411,7 @@ let tagFrame = 0;
 
 function renderTagPills() {
   const seen = new Set();
-  for (const n of state.nodes.values()) {
+  for (const n of mapNodes()) {
     const tags = n.type === 'company' ? String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean) : [];
     if (!tags.length) continue;
     seen.add(n.id);
@@ -452,17 +453,36 @@ function scheduleTagPositions() {
   if (!tagFrame) tagFrame = requestAnimationFrame(positionTagPills);
 }
 
+// Records can be saved but kept off the map (e.g. Wingmate leads before a pipeline's map
+// stage). A company off the map still shows when one of its contacts is on it.
+function computeMapIds() {
+  const ids = new Set();
+  for (const n of state.nodes.values()) {
+    if (n.off_map) continue;
+    ids.add(n.id);
+    if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) ids.add(n.company_id);
+  }
+  return ids;
+}
+
+const onMap = (id) => !state.mapIds || state.mapIds.has(id);
+const mapNodes = () => [...state.nodes.values()].filter((n) => onMap(n.id));
+
 function buildElements() {
   const els = [];
-  for (const n of state.nodes.values()) els.push(nodeElement(n));
-  for (const n of state.nodes.values()) {
-    if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) els.push(worksAtElement(n));
+  const nodes = mapNodes();
+  for (const n of nodes) els.push(nodeElement(n));
+  for (const n of nodes) {
+    if (n.type === 'person' && n.company_id != null && onMap(n.company_id)) els.push(worksAtElement(n));
   }
-  for (const e of state.edges.values()) els.push(edgeElement(e));
+  for (const e of state.edges.values()) {
+    if (onMap(e.source_id) && onMap(e.target_id)) els.push(edgeElement(e));
+  }
   return els;
 }
 
 function render() {
+  state.mapIds = computeMapIds();
   const els = buildElements();
   const wanted = new Set(els.map((e) => e.data.id));
   cy.batch(() => {
@@ -495,13 +515,13 @@ function render() {
   applySearch();
   refreshFilterOptions();
   updateStats();
-  $('#empty').hidden = state.nodes.size > 0;
+  $('#empty').hidden = state.mapIds.size > 0;
 }
 
 // New nodes (and CSV imports) arrive without coordinates: put people at the bottom of
 // their company's column and loose nodes in a grid beside the existing map.
 function placeUnpositioned() {
-  const all = [...state.nodes.values()];
+  const all = mapNodes();
   const missing = all.filter((n) => !hasPos(n));
   if (!missing.length) return;
   if (missing.length === all.length) {
@@ -564,7 +584,7 @@ function chainOrder(items, links, newer) {
 }
 
 function orgChartPlan() {
-  const nodes = [...state.nodes.values()];
+  const nodes = mapNodes();
   const companyIds = new Set(nodes.filter((n) => n.type === 'company').map((n) => n.id));
   const staffOf = new Map([...companyIds].map((id) => [id, []]));
   const loose = [];
@@ -851,6 +871,10 @@ function computeViewSets(rep) {
 }
 
 function inView(id) {
+  return onMap(id) && inRepView(id);
+}
+
+function inRepView(id) {
   const v = state.viewSets;
   return !v || v.visible.has(id) || v.context.has(id);
 }
@@ -1034,7 +1058,7 @@ function updateStats() {
 function searchMatches() {
   const q = $('#search').value.trim().toLowerCase();
   if (!q) return [];
-  return [...state.nodes.values()].filter((n) => inView(n.id)).filter((n) =>
+  return [...state.nodes.values()].filter((n) => inRepView(n.id)).filter((n) =>
     [n.name, n.title, n.email, n.type === 'company' ? n.tags : '', n.location, n.owner_rep, n.notes].some((v) => String(v || '').toLowerCase().includes(q))
     || (state.noteText.get(n.id) || '').includes(q));
 }
@@ -1044,7 +1068,8 @@ function applySearch() {
   cy.nodes().removeClass('match');
   for (const n of matches) cy.getElementById(`n${n.id}`).addClass('match');
   const q = $('#search').value.trim();
-  $('#search-count').textContent = q ? `${matches.length} found` : '';
+  const off = matches.filter((n) => !onMap(n.id)).length;
+  $('#search-count').textContent = q ? `${matches.length} found${off ? ` (${off} not on the map)` : ''}` : '';
 }
 
 $('#search').addEventListener('input', applySearch);
@@ -1312,13 +1337,20 @@ function actionsHtml(n) {
   }
   if (n.email) btns.push(`<a class="btn btn-sm" href="mailto:${esc(n.email)}">Email</a>`);
   if (n.phone) btns.push(`<a class="btn btn-sm" href="tel:${esc(n.phone.replace(/[^\d+]/g, ''))}">Call</a>`);
-  btns.push('<button class="btn btn-sm" data-act="show-map">Show on map</button>');
+  if (onMap(n.id)) {
+    btns.push('<button class="btn btn-sm" data-act="show-map">Show on map</button>');
+  } else {
+    btns.push(`<button class="btn btn-sm btn-primary" data-act="on-map" title="Draw ${n.type === 'company' ? 'this company and its contacts' : 'this contact (and its company)'} on the map">+ Put on the map</button>`);
+  }
   if (n.type === 'person') {
     btns.push(`<button class="btn btn-sm ${n.priority ? 'btn-priority' : ''}" data-act="priority" aria-pressed="${!!n.priority}" title="Anyone can flag a contact as high priority">${n.priority ? '★ High priority' : '☆ Mark high priority'}</button>`);
   }
   btns.push(`<button class="btn btn-sm" data-act="color" title="Change this card's color (everyone sees it)"><span class="swatch-dot" style="background:${nodeColor(n)}"></span>Color</button>`);
   if (canEditNode(n)) btns.push('<button class="btn btn-sm" data-act="edit">Edit</button>');
   if (canEditNode(n) && n.type === 'person') btns.push('<button class="btn btn-sm" data-act="merge" title="Fold a duplicate of this contact into it">Merge…</button>');
+  if (onMap(n.id) && (state.me || state.isAdmin)) btns.push(`<button class="btn btn-sm btn-ghost" data-act="off-map" title="Keep it in PSS Connect and searchable, but don't draw it${n.type === 'company' ? ' (or its contacts)' : ''}">Take off map</button>`);
+  const offMap = onMap(n.id) ? ''
+    : `<div class="off-map-note">Not on the map${n.stage ? ` (stage: ${esc(n.stage)})` : ''}. It's saved and searchable; put it on the map to see it there.</div>`;
   const viewOnly = canEditNode(n) ? ''
     : `<div class="view-only">View only · ${n.owner_rep ? `assigned to ${esc(n.owner_rep)}` : 'unassigned'}. You can still add tags, notes, connections, change its color${n.type === 'person' ? ' or flag it high priority' : ''}.</div>`;
   const picker = state.colorPickerFor === n.id ? `<div class="color-picker" role="group" aria-label="Card color">
@@ -1331,7 +1363,7 @@ function actionsHtml(n) {
   } else if (state.me && !canEditNode(n) && n.owner_rep !== myName()) {
     btns.push('<button class="btn btn-sm" data-act="request-transfer" title="Ask the owner (or an admin) to give you this lead">Request transfer</button>');
   }
-  return `<div class="card-actions">${btns.join('')}</div>${picker}${transferBannerHtml(n)}${viewOnly}`;
+  return `${offMap}<div class="card-actions">${btns.join('')}</div>${picker}${transferBannerHtml(n)}${viewOnly}`;
 }
 
 // Anyone can add or remove a company's tags (not just its owner); new tags
@@ -1428,6 +1460,10 @@ function stageBadge(n) {
   if (!n || n.type !== 'person') return '';
   return (n.priority ? ' <span class="priority-star" title="High priority">★</span>' : '')
     + (n.stage ? ` <span class="stage-chip" title="Pipeline stage">${esc(n.stage)}</span>` : '');
+}
+
+function offMapBadge(n) {
+  return onMap(n.id) ? '' : ' <span class="off-map-chip" title="Saved, but not drawn on the map">Not on map</span>';
 }
 
 function connListHtml(rows, empty) {
@@ -1598,7 +1634,7 @@ function rosterRowHtml(p, staffIds) {
   const noteCount = notesFor(p.id).length;
   return `<li data-goto="${p.id}">
     ${avatar(p, 'avatar-sm')}
-    <span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}${detail ? `<span>${esc(detail)}</span>` : ''}</span>
+    <span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}${offMapBadge(p)}${detail ? `<span>${esc(detail)}</span>` : ''}</span>
     ${noteCount ? `<span class="badge" title="${plural(noteCount, 'note', 'notes')}">${noteCount} ✎</span>` : ''}
   </li>`;
 }
@@ -1996,7 +2032,7 @@ async function mergeInto(keepId, otherId) {
 // stackable "Filter by" choices: values of one field are OR'd, fields are AND'd.
 
 const DIR_FIELDS = [
-  ['company', 'Company'], ['priority', 'Priority'], ['tag', 'Tag'], ['city', 'City'], ['rep', 'Rep'],
+  ['company', 'Company'], ['priority', 'Priority'], ['tag', 'Tag'], ['city', 'City'], ['rep', 'Rep'], ['stage', 'Stage'], ['map', 'Map'],
 ];
 
 function dirValues(field, n) {
@@ -2009,6 +2045,8 @@ function dirValues(field, n) {
     case 'tag': return company ? String(company.tags || '').split(',').map((t) => t.trim()).filter(Boolean) : [];
     case 'city': return [...new Set([cityOf(n), company ? cityOf(company) : ''].filter(Boolean))];
     case 'rep': return [n.owner_rep.trim() || 'Unassigned'];
+    case 'stage': return [...new Set(staff.map((p) => p.stage.trim()).filter(Boolean))];
+    case 'map': return [onMap(n.id) ? 'On the map' : 'Not on the map'];
     default: return [];
   }
 }
@@ -2098,12 +2136,12 @@ function renderDirectoryList() {
   if (state.dirTab === 'companies') {
     list.innerHTML = countLine + (items.length ? items.map((c) => {
       const detail = [plural(peopleAt(c.id).length, 'contact', 'contacts'), c.location, c.owner_rep].filter(Boolean).join(' · ');
-      return `<li data-goto="${c.id}">${avatar(c, 'avatar-sm')}<span class="who"><b>${esc(c.name)}</b><span>${esc(detail)}</span>${tagChipsHtml(c)}</span></li>`;
+      return `<li data-goto="${c.id}">${avatar(c, 'avatar-sm')}<span class="who"><b>${esc(c.name)}</b>${offMapBadge(c)}<span>${esc(detail)}</span>${tagChipsHtml(c)}</span></li>`;
     }).join('') : '<li class="muted">No companies match.</li>');
   } else {
     list.innerHTML = countLine + (items.length ? items.map((p) => {
       const detail = [p.title, companyOf(p)?.name, p.owner_rep || 'Unassigned'].filter(Boolean).join(' · ');
-      return `<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}<span>${esc(detail)}</span></span></li>`;
+      return `<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}${offMapBadge(p)}<span>${esc(detail)}</span></span></li>`;
     }).join('') : '<li class="muted">No contacts match.</li>');
   }
   fillDirValues();
@@ -2286,6 +2324,18 @@ panel.addEventListener('click', async (evt) => {
   else if (act === 'edit') openEditPanel(p.id);
   else if (act === 'cancel-edit') openNodePanel(p.id);
   else if (act === 'show-map') focusOn(p.id);
+  else if (act === 'on-map' || act === 'off-map') {
+    const n = state.nodes.get(p.id);
+    const on = act === 'on-map';
+    if (!on && !confirm(`Take ${n.name}${n.type === 'company' ? ' and its contacts' : ''} off the map? Nothing is deleted: it stays in Contacts and search, and anyone can put it back.`)) return;
+    try {
+      await api('POST', `/api/nodes/${n.id}/display`, { on_map: on });
+      await sync();
+      rerenderCard();
+      if (on) focusOn(n.id);
+      toast(on ? `${n.name} is on the map` : `${n.name} is off the map`);
+    } catch (err) { toast(err.message, true); }
+  }
   else if (act === 'add-person-here') openNewNodePanel('person', p.id);
   else if (act === 'move-company' || act === 'cancel-move') {
     state.moveFor = act === 'move-company' && state.moveFor !== p.id ? p.id : null;
@@ -2622,13 +2672,14 @@ const WM_LABELS = [
   ['companies_updated', 'company updated', 'companies updated'], ['people_added', 'person added', 'people added'],
   ['people_linked', 'person linked', 'people linked'], ['people_updated', 'person updated', 'people updated'],
   ['notes_added', 'note added', 'notes added'], ['notes_moved', 'note moved to its contact', 'notes moved to their contacts'],
+  ['put_on_map', 'lead reached the map stage', 'leads reached the map stage'],
 ];
 
 function wingmateCounts(r, preview) {
   const parts = WM_LABELS.filter(([key]) => r[key]).map(([key, one, many]) =>
     `${r[key]} ${(r[key] === 1 ? one : many).replace(preview ? /added|linked|updated/ : /$^/, (w) => `to be ${w}`)}`);
   if (preview && r.notes_to_check) parts.push(`notes checked on ${plural(r.notes_to_check, 'company', 'companies')}`);
-  if (r.held_back) parts.push(`${plural(r.held_back, 'lead', 'leads')} before the starting stage left out`);
+  if (r.off_map) parts.push(`${plural(r.off_map, 'lead', 'leads')} before the map stage kept off the map`);
   return parts.length ? parts.join(' · ') : 'Everything already up to date';
 }
 
@@ -2678,17 +2729,17 @@ function wingmateSectionHtml() {
 function extraPipelinesHtml(w) {
   const list = w.extra_pipelines || [];
   const rows = list.map((p) => `<li><span><b>${esc(p.name || p.campaign_id)}</b>
-      <span class="muted"> · ${p.from_stage ? `from “${esc(p.from_stage)}” on` : 'all stages'}</span></span>
+      <span class="muted"> · all contacts; on the map ${p.from_stage ? `from “${esc(p.from_stage)}” on` : 'at every stage'}</span></span>
       <button type="button" class="link-btn" data-wm-remove="${esc(p.campaign_id)}">Remove</button></li>`).join('');
   const i = state.wmInspect;
   const pick = i ? `<form class="rep-form" data-form="wm-pipeline-save">
       <p><b>${esc(i.name || i.campaign_id)}</b> · ${plural(i.leads, 'lead', 'leads')}</p>
-      <label class="wm-stage">Sync leads from this stage on
+      <label class="wm-stage">Show on the map from this stage on
         <select name="from_stage">
-          <option value="">All stages</option>
+          <option value="">Every stage</option>
           ${i.stages.map((st) => `<option value="${esc(st.name)}">${esc(st.name)} (${st.leads})</option>`).join('')}
         </select></label>
-      <p class="muted">Stages are listed in pipeline order. Leads before the one you pick stay out of PSS Connect until they reach it.</p>
+      <p class="muted">Stages are listed in pipeline order. Every lead and contact comes into PSS Connect and can be searched; ones before the stage you pick are kept off the map until they reach it (or someone puts them on it).</p>
       <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">Save pipeline</button>
         <button type="button" class="btn btn-sm btn-ghost" data-wm-act="cancel-pipeline">Cancel</button></div>
     </form>` : `<form class="rep-form" data-form="wm-pipeline-check">
