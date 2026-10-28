@@ -1,5 +1,6 @@
 """
-One-way sync from Wingmate into PSS Connect.
+Sync from Wingmate into PSS Connect (and, for outbound flows, a few writes back:
+updates on a lead and stage moves; see flows.py).
 
 Wingmate leads become companies, their contacts become people, and lead
 comments become notes. On later runs only name, location, email and phone
@@ -58,6 +59,29 @@ class WingmateClient:
             except ValueError:
                 raise WingmateError(f"Wingmate sent an unreadable response for {path}.") from None
         return None
+
+    def send(self, method, path, body):
+        """One write (POST/PATCH). Not retried, so an update is never logged twice;
+        Wingmate's own error text is passed on, since the write API is thinly documented."""
+        query = urllib.parse.urlencode({"authorization": self.token})
+        req = urllib.request.Request(f"{BASE_URL}{path}?{query}", data=json.dumps(body).encode(), method=method,
+                                     headers={"Accept": "application/json", "Content-Type": "application/json",
+                                              "User-Agent": "PSS-Connect"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            detail = text(e.read().decode("utf-8", "replace"), 200)
+            raise WingmateError(f"Wingmate said no ({e.code}){f': {detail}' if detail else ''}") from None
+        except (urllib.error.URLError, socket.timeout, ConnectionError):
+            raise WingmateError("Couldn't reach Wingmate") from None
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        if isinstance(data, dict) and len(data) == 1 and isinstance(next(iter(data.values())), dict):
+            data = next(iter(data.values()))  # {"comment": {...}}
+        return data if isinstance(data, dict) else {}
 
     def get_all(self, path):
         """Reads every page. The API doesn't document paging, so stop when a page is
@@ -491,15 +515,27 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
 
     # Who's in this pipeline now. An empty answer from Wingmate when it had leads last time
     # is more likely a hiccup than an emptied pipeline, so that keeps the old list.
+    # Each record's Wingmate lead in this pipeline is kept too, for writing back to it.
     if not dry_run:
-        members = {n["id"] for n in lead_nodes.values()} | {n["id"] for pairs in lead_contacts.values() for _, n in pairs}
-        members.discard(None)
-        had = {r["node_id"] for r in db.execute("SELECT node_id FROM wingmate_members WHERE campaign_id = ?", (str(cid),))}
+        members = {}
+        for lead_id, company in lead_nodes.items():
+            members.setdefault(company["id"], lead_id)
+        for lead_id, pairs in lead_contacts.items():
+            for _, n in pairs:
+                members.setdefault(n["id"], lead_id)
+        members = {k: v for k, v in members.items() if k and k > 0}
+        had = {r["node_id"]: r["lead_id"] for r in db.execute(
+            "SELECT node_id, lead_id FROM wingmate_members WHERE campaign_id = ?", (str(cid),))}
         if members or not had:
-            for node_id in had - members:
+            for node_id in had.keys() - members.keys():
                 db.execute("DELETE FROM wingmate_members WHERE campaign_id = ? AND node_id = ?", (str(cid), node_id))
-            for node_id in members - had:
-                db.execute("INSERT INTO wingmate_members (campaign_id, node_id) VALUES (?, ?)", (str(cid), node_id))
+            for node_id, lead_id in members.items():
+                if node_id not in had:
+                    db.execute("INSERT INTO wingmate_members (campaign_id, node_id, lead_id) VALUES (?, ?, ?)",
+                               (str(cid), node_id, lead_id))
+                elif had[node_id] != lead_id:
+                    db.execute("UPDATE wingmate_members SET lead_id = ? WHERE campaign_id = ? AND node_id = ?",
+                               (lead_id, str(cid), node_id))
 
     def note_target(lead_id, company):
         """Wingmate notes are about the person: the lead's primary contact, else its first
@@ -528,8 +564,8 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             for comment in client.get_all(f"/leads/{lead_id}/comments"):
                 ext = f"wingmate-comment:{comment.get('id')}"
                 body = text(comment.get("text") or comment.get("body") or comment.get("comment"), 5000)
-                if ext in known or not body:
-                    continue
+                if ext in known or not body or text(comment.get("external_id")).startswith("pss-"):
+                    continue  # already here, empty, or written by PSS Connect (its note is already here)
                 label = comment_label(comment)
                 db.insert("notes", {"node_id": target["id"], "body": f"{label}: {body}" if label else body,
                                     "author": author_for(comment),

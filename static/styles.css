@@ -983,6 +983,9 @@ body.ai-open { padding-right: 420px; }
 .flow-source .flow-daily { display: block; }
 .flow-source .flow-daily input { width: 64px; margin: 0 4px; }
 .flow-source p { margin: 0; }
+.flow-source .check { flex-direction: row; align-items: center; gap: 7px; }
+.flow-push-row { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); align-items: center; gap: 8px; }
+.flow-push-row span { color: var(--muted); }
 .flow-editor code { font-size: 11.5px; background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
 .flow-enroll { display: flex; align-items: center; gap: 6px; margin: 8px 16px 0; }
 .flow-enroll select { flex: 1; min-width: 0; }

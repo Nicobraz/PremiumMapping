@@ -309,6 +309,9 @@ MIGRATIONS = [  # (table, column, definition, backfill SQL run once when the col
     ("flows", "auto_daily", "INTEGER NOT NULL DEFAULT 0", None),
     # Whether the contact was in the flow's pipeline when added (leaving it then ends the flow).
     ("flow_enrollments", "in_pipeline", "INTEGER NOT NULL DEFAULT 0", None),
+    # The record's Wingmate lead in that pipeline, and what a flow writes back to Wingmate.
+    ("wingmate_members", "lead_id", "TEXT NOT NULL DEFAULT ''", None),
+    ("flows", "wm_push", "TEXT NOT NULL DEFAULT '{}'", None),
 ]
 
 

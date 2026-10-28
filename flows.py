@@ -10,14 +10,22 @@ done is recorded as a note on the contact.
 A flow can be tied to a Wingmate pipeline (e.g. Cold Outreach): it then adds that pipeline's
 contacts by itself, up to a set number a day, optionally only those at a starting stage.
 
+What happens in a pipeline flow can be written back to Wingmate (only when an admin works
+it, for now): each step done is logged as an update on the contact's lead, and the lead's
+stage moves at set points (first step done, replied, meeting booked, finished). A booked
+meeting can also move the lead into another pipeline (e.g. the main one).
+
 A contact leaves a flow when it's marked replied or meeting booked, when it's removed, after
 the last step, when its pipeline stage (synced from Wingmate) reaches one of the flow's
 exit stages, or when it's no longer in the flow's pipeline (e.g. moved to another one).
 """
 import json
+import time
 from datetime import datetime, timedelta, timezone
 
 from flask import jsonify, request
+
+import wingmate
 
 try:
     from zoneinfo import ZoneInfo
@@ -34,6 +42,12 @@ ENDINGS = {"replied": "Replied", "meeting": "Meeting booked", "stopped": "Remove
 CALL_OUTCOMES = ("No answer", "Left voicemail", "Talked", "Wrong number")
 AUTO = "Auto (Wingmate)"  # enrolled_by for contacts a pipeline flow added by itself
 MAX_DAILY = 500
+# What a pipeline flow writes back to Wingmate: log each step on the lead, and the stage to
+# move the lead to at each point ("" = leave it). meeting_pipeline/meeting_pipeline_stage:
+# where a booked meeting moves the lead.
+PUSH_DEFAULTS = {"log": True, "first_done": "", "replied": "", "meeting": "", "finished": "",
+                 "meeting_pipeline": "", "meeting_pipeline_stage": ""}
+UPDATE_TYPES = {"email": "EmailCorrespondence", "call": "PhoneCorrespondence", "linkedin": "SocialCorrespondence"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS flows (
@@ -83,6 +97,7 @@ def flow_row(row):
     return {"id": row["id"], "name": row["name"], "exit_stages": loads(row["exit_stages"], []),
             "steps": loads(row["steps"], []), "created_at": row["created_at"],
             "pipeline": row["pipeline"], "start_stage": row["start_stage"], "auto_daily": row["auto_daily"],
+            "wm_push": {**PUSH_DEFAULTS, **loads(row["wm_push"], {})},
             "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
 
 
@@ -111,8 +126,15 @@ def clean_flow(data):
     daily = min(MAX_DAILY, max(0, core.to_int(data.get("auto_daily")) or 0)) if pipeline else 0
     if start and start.lower() in {x.lower() for x in stages}:
         return None, f"“{start}” can't be both the starting stage and an exit stage"
+    raw = data.get("wm_push") if isinstance(data.get("wm_push"), dict) else {}
+    push = {key: (bool(raw.get(key, default)) if isinstance(default, bool) else str(raw.get(key) or "").strip()[:120])
+            for key, default in PUSH_DEFAULTS.items()} if pipeline else dict(PUSH_DEFAULTS)
+    if push["first_done"] and push["first_done"].lower() in {x.lower() for x in stages}:
+        return None, f"Moving contacts to “{push['first_done']}” after the first step would take them straight out of the flow (it's an exit stage)"
+    if not push["meeting_pipeline"]:
+        push["meeting_pipeline_stage"] = ""
     return {"name": name, "steps": json.dumps(steps), "exit_stages": json.dumps(sorted(set(stages))),
-            "pipeline": pipeline, "start_stage": start, "auto_daily": daily}, None
+            "pipeline": pipeline, "start_stage": start, "auto_daily": daily, "wm_push": json.dumps(push)}, None
 
 
 def pipelines(db):
@@ -215,6 +237,95 @@ def payload(db):
     enrollments = [dict(r) for r in db.execute("SELECT * FROM flow_enrollments ORDER BY id")]
     return {"flows": flows, "enrollments": enrollments, "today": today().isoformat(),
             "outcomes": list(CALL_OUTCOMES), "pipelines": pipelines(db), "auto": AUTO}
+
+
+# ---------- writing back to Wingmate ----------
+
+_wm_users = {}  # campaign id -> (fetched at, {email: Wingmate user id})
+
+
+def wingmate_user_id(client, email):
+    """The Wingmate user with this email, so updates show under their name."""
+    if not email:
+        return None
+    at, users = _wm_users.get(client.campaign_id, (0, {}))
+    if time.time() - at > 600:
+        try:
+            users = {wingmate.text(u.get("email")).lower(): u.get("id")
+                     for u in client.get_all(f"/campaigns/{client.campaign_id}/users")}
+        except wingmate.WingmateError:
+            users = {}
+        _wm_users[client.campaign_id] = (time.time(), users)
+    return users.get(email.strip().lower())
+
+
+def push(db, flow, node_id, events):
+    """Writes flow events to the contact's Wingmate lead. events: list of ("log", text, kind)
+    and ("stage", event name). Returns (ok, message) for the admin, or None when nothing applies."""
+    settings = flow["wm_push"]
+    if not flow["pipeline"] or not core.is_admin():
+        return None
+    leads = {r["campaign_id"]: r["lead_id"] for r in db.execute(
+        "SELECT campaign_id, lead_id FROM wingmate_members WHERE node_id = ? AND lead_id <> ''", (node_id,))}
+    clients = {str(s["campaign_id"]): c for s, c in core.wingmate_pipelines(db)}
+    # The lead in the flow's pipeline, else wherever the contact is (for logging only).
+    cid = flow["pipeline"] if flow["pipeline"] in leads else next((c for c in leads if c in clients), None)
+    if cid is None or cid not in clients:
+        return None
+    client, lead_id = clients[cid], leads[cid]
+    rep = core.current_rep()
+    user_id = wingmate_user_id(client, rep["email"] if rep else "")
+    done, problems = [], []
+    for event in events:
+        try:
+            if event[0] == "log" and settings["log"]:
+                body = {"text": event[1], "type": UPDATE_TYPES.get(event[2], "Comment"),
+                        "external_id": f"pss-flow-{event[3]}"}
+                if user_id:
+                    body["user_id"] = user_id
+                made = client.send("POST", f"/leads/{lead_id}/comments", body)
+                if made.get("id") is not None and event[4]:  # our note stands for it, so the sync skips it
+                    db.execute("UPDATE notes SET external_id = ? WHERE id = ?", (f"wingmate-comment:{made['id']}", event[4]))
+                done.append("logged")
+            elif event[0] == "stage" and cid == flow["pipeline"] and settings.get(event[1]):
+                stage = settings[event[1]]
+                client.send("PATCH", f"/leads/{lead_id}", {"status_string": stage})
+                set_stage(db, node_id, stage)
+                done.append(f"moved to {stage}")
+        except wingmate.WingmateError as e:
+            problems.append(str(e))
+    if any(e[0] == "stage" and e[1] == "meeting" for e in events) and settings["meeting_pipeline"] and cid == flow["pipeline"]:
+        target = settings["meeting_pipeline"]
+        body = {"campaign_id": core.to_int(target) or target}
+        if settings["meeting_pipeline_stage"]:
+            body["status_string"] = settings["meeting_pipeline_stage"]
+        moved, last = False, ""
+        # The pipeline's own token first; if it can't move leads out, the target pipeline's.
+        for who in [client] + ([clients[target]] if target in clients else []):
+            try:
+                who.send("PATCH", f"/leads/{lead_id}", body)
+                moved = True
+                break
+            except wingmate.WingmateError as e:
+                last = str(e)
+        if moved:
+            name = next((p["name"] for p in pipelines(db) if p["campaign_id"] == target), "the other pipeline")
+            done.append(f"moved to {name}")
+            if settings["meeting_pipeline_stage"]:
+                set_stage(db, node_id, settings["meeting_pipeline_stage"])
+        else:
+            problems.append(f"Wingmate couldn't move the lead to the other pipeline, so move it there by hand ({last})")
+    db.commit()
+    if problems:
+        return False, "; ".join(problems)
+    return (True, "Wingmate: " + ", ".join(dict.fromkeys(done))) if done else None
+
+
+def set_stage(db, node_id, stage):
+    """Shows a stage we set in Wingmate right away (the next sync confirms it)."""
+    db.execute("UPDATE nodes SET stage = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+               (stage, core.now(), core.actor(), node_id))
+    core.bump_version(db)
 
 
 def admin_check():
@@ -346,6 +457,7 @@ def act(enrollment_id):
     if e["status"] != "active":
         return core.bad("That contact isn't in the flow any more")
     step = steps[min(e["step_index"], len(steps) - 1)]
+    events = []  # what to write back to Wingmate
     label = f"{flow['name']} · step {e['step_index'] + 1} ({step['kind']})"
     if action in ("done", "skip"):
         if action == "done":
@@ -355,12 +467,16 @@ def act(enrollment_id):
             if step["kind"] == "email" and step["subject"]:
                 what += f" (“{str(data.get('subject') or step['subject'])[:200]}”)"
             body = f"Flow {label}: {what}." + (f"\n{note}" if note else "")
-            db.insert("notes", {"node_id": node["id"], "body": body, "author": core.actor(), "created_at": core.now()})
+            note_id = db.insert("notes", {"node_id": node["id"], "body": body, "author": core.actor(), "created_at": core.now()})
+            events.append(("log", body, step["kind"], f"{enrollment_id}-{e['step_index']}", note_id))
+            if e["step_index"] == 0:
+                events.append(("stage", "first_done"))
         nxt = e["step_index"] + 1
         if nxt >= len(steps):
             db.execute("UPDATE flow_enrollments SET step_index = ?, last_done_at = ? WHERE id = ?",
                        (nxt, core.now(), enrollment_id))
             end(db, enrollment_id, "finished")
+            events.append(("stage", "finished"))
         else:
             db.execute("UPDATE flow_enrollments SET step_index = ?, due_on = ?, last_done_at = ? WHERE id = ?",
                        (nxt, due_after(steps[nxt]["wait_days"]), core.now(), enrollment_id))
@@ -370,14 +486,17 @@ def act(enrollment_id):
         status = "stopped" if action == "stop" else action
         end(db, enrollment_id, status)
         if action != "stop":
-            db.insert("notes", {"node_id": node["id"], "author": core.actor(), "created_at": core.now(),
-                                "body": f"Flow {flow['name']}: {ENDINGS[status]}." + (f"\n{note}" if note else "")})
+            body = f"Flow {flow['name']}: {ENDINGS[status]}." + (f"\n{note}" if note else "")
+            note_id = db.insert("notes", {"node_id": node["id"], "author": core.actor(), "created_at": core.now(),
+                                          "body": body})
+            events += [("log", body, "task", f"{enrollment_id}-{action}", note_id), ("stage", action)]
             core.bump_version(db)
         core.log(db, "flow", f"{node['name']}: {ENDINGS[status].lower()} ({flow['name']})")
     else:
         return core.bad("Unknown action")
     db.commit()
-    return jsonify(payload(db))
+    result = push(db, flow, node["id"], events) if events else None
+    return jsonify({**payload(db), **({"wingmate": {"ok": result[0], "message": result[1]}} if result else {})})
 
 
 def install(app, module):
