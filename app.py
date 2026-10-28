@@ -116,6 +116,12 @@ CREATE TABLE IF NOT EXISTS wingmate_aliases (
     node_id  INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     seen     TEXT NOT NULL DEFAULT ''
 );
+-- Which records each Wingmate pipeline had at its last sync (flows add and drop contacts by it).
+CREATE TABLE IF NOT EXISTS wingmate_members (
+    campaign_id  TEXT NOT NULL,
+    node_id      INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    PRIMARY KEY (campaign_id, node_id)
+);
 CREATE TABLE IF NOT EXISTS transfer_requests (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -296,6 +302,13 @@ MIGRATIONS = [  # (table, column, definition, backfill SQL run once when the col
     ("nodes", "priority", "INTEGER NOT NULL DEFAULT 0", None),
     # Saved and searchable but not drawn on the map (e.g. Wingmate leads before a pipeline's map stage).
     ("nodes", "off_map", "INTEGER NOT NULL DEFAULT 0", None),
+    # Flows tied to a Wingmate pipeline: which one, the stage that starts the flow, and how
+    # many of its contacts to add automatically a day (0 = only by hand).
+    ("flows", "pipeline", "TEXT NOT NULL DEFAULT ''", None),
+    ("flows", "start_stage", "TEXT NOT NULL DEFAULT ''", None),
+    ("flows", "auto_daily", "INTEGER NOT NULL DEFAULT 0", None),
+    # Whether the contact was in the flow's pipeline when added (leaving it then ends the flow).
+    ("flow_enrollments", "in_pipeline", "INTEGER NOT NULL DEFAULT 0", None),
 ]
 
 
@@ -1883,7 +1896,8 @@ def wingmate_client(db):
 
 
 # Besides the main pipeline, an admin can add more Wingmate pipelines (each has its own
-# token), optionally syncing only leads from a given stage on.
+# token). Every lead comes in; a pipeline can show its leads on the map from a given stage
+# on, or never (keep_off_map, e.g. a cold outreach list nobody has contacted yet).
 def extra_pipelines(db):
     try:
         items = json.loads(get_setting(db, "wingmate_extra_pipelines") or "[]")
@@ -1925,18 +1939,23 @@ def run_wingmate_sync(dry_run=False):
                 return {"ok": False, "error": "Wingmate isn't connected yet."}
             started = now()
             try:
-                totals = {}
+                totals, stages = {}, {}
                 for settings, client in pipelines:
                     name = (settings.get("name") or settings["campaign_id"]) if len(pipelines) > 1 else ""
                     try:
                         counts = wingmate.run_sync(db, client, SYNC_TOOLS, dry_run,
-                                                   map_from_stage=settings.get("from_stage") or "", pipeline_name=name)
+                                                   map_from_stage=settings.get("from_stage") or "", pipeline_name=name,
+                                                   keep_off_map=bool(settings.get("keep_off_map")))
                     except wingmate.WingmateError as e:
                         raise wingmate.WingmateError(f"{name}: {e}" if name else str(e)) from None
                     for key, value in counts.items():
                         if isinstance(value, (int, float)):
                             totals[key] = totals.get(key, 0) + value
+                    stages[settings["campaign_id"]] = counts.get("stages", [])
                 result = {"ok": True, "at": started, **totals}
+                if not dry_run:
+                    set_setting(db, "wingmate_stages", json.dumps(stages))
+                    result["flow_added"] = flows.auto_enroll(db)
             except wingmate.WingmateError as e:
                 db.conn.rollback()
                 result = {"ok": False, "at": started, "error": str(e)}
@@ -1991,6 +2010,7 @@ def wingmate_status(db):
         "interval_minutes": WINGMATE_INTERVAL // 60,
         "cron_url": f"{request.host_url}api/wingmate/cron?key={cron_key}" if cron_key else "",
         "extra_pipelines": [{"campaign_id": p["campaign_id"], "name": p.get("name", ""), "from_stage": p.get("from_stage", ""),
+                             "keep_off_map": bool(p.get("keep_off_map")),
                              "token_hint": f"…{p['token'][-4:]}"} for p in extra_pipelines(db)],
     }
 
@@ -2073,15 +2093,17 @@ def add_wingmate_pipeline():
         info = inspect_pipeline(token, campaign_id)
     except wingmate.WingmateError as e:
         return bad(str(e))
-    from_stage = str(data.get("from_stage") or "").strip()
+    keep_off_map = bool(data.get("keep_off_map"))
+    from_stage = "" if keep_off_map else str(data.get("from_stage") or "").strip()
     if from_stage and from_stage.lower() not in {st["name"].lower() for st in info["stages"]}:
         return bad(f"“{from_stage}” isn't a stage in that pipeline")
     items = [p for p in extra_pipelines(db) if p["campaign_id"] != campaign_id]
-    items.append({"token": token, "campaign_id": campaign_id, "name": info["name"], "from_stage": from_stage})
+    items.append({"token": token, "campaign_id": campaign_id, "name": info["name"], "from_stage": from_stage,
+                  "keep_off_map": keep_off_map})
     save_extra_pipelines(db, items)
     if not get_setting(db, "wingmate_cron_key"):
         set_setting(db, "wingmate_cron_key", secrets.token_urlsafe(24))
-    where = f", on the map from “{from_stage}” on" if from_stage else ""
+    where = ", kept off the map" if keep_off_map else f", on the map from “{from_stage}” on" if from_stage else ""
     log(db, "wingmate", f"Connected Wingmate pipeline {info['name'] or campaign_id}{where}")
     db.commit()
     return jsonify(wingmate_status(db))
@@ -2096,6 +2118,7 @@ def remove_wingmate_pipeline(campaign_id):
     if not gone:
         return bad("Not found", 404)
     save_extra_pipelines(db, [p for p in items if p["campaign_id"] != campaign_id])
+    db.execute("DELETE FROM wingmate_members WHERE campaign_id = ?", (campaign_id,))
     log(db, "wingmate", f"Disconnected Wingmate pipeline {gone.get('name') or campaign_id}")
     db.commit()
     return jsonify(wingmate_status(db))

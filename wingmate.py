@@ -248,20 +248,26 @@ def stages_from(stages, first):
 
 # ---------- the sync ----------
 
-def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=""):
+def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name="", keep_off_map=False):
     """tools: dict with norm_name, now, bump_version (from app.py, passed in to avoid
     a circular import). Returns counts; writes nothing when dry_run is True.
     map_from_stage: every lead comes in, but only leads at that stage of the pipeline or later
     (and their contacts) go on the map; the rest are saved off the map until they reach it.
-    pipeline_name: names the pipeline in the activity feed when more than one is synced."""
+    pipeline_name: names the pipeline in the activity feed when more than one is synced.
+    keep_off_map: every lead comes in, none goes on the map (it goes on once another pipeline,
+    such as the main one, has it).
+    Also records which records are in this pipeline (wingmate_members) and returns its stages."""
     norm_name, now = tools["norm_name"], tools["now"]
     cid = client.campaign_id
     users = {str(u.get("id")): u for u in client.get_all(f"/campaigns/{cid}/users")}
     leads = client.get_all(f"/campaigns/{cid}/leads")
     contacts = client.get_all(f"/campaigns/{cid}/contacts")
     held_back = set()  # leads before the map stage: saved, but kept off the map
-    allowed = stages_from(pipeline_stages(client.campaign(), leads), map_from_stage) if map_from_stage else None
-    if allowed is not None:
+    stages = pipeline_stages(client.campaign(), leads)
+    allowed = stages_from(stages, map_from_stage) if map_from_stage else None
+    if keep_off_map:
+        held_back = {str(l.get("id")) for l in leads}
+    elif allowed is not None:
         held_back = {str(l.get("id")) for l in leads if text(l.get("status_string")).lower() not in allowed}
     for lead in leads:  # the campaign user list can be partial; leads embed their owners and worker
         for user in (lead.get("owners") or []) + [lead.get("worker")]:
@@ -304,7 +310,8 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
 
     counts = {"leads": len(leads), "contacts": len(contacts), "companies_added": 0, "companies_linked": 0,
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
-              "notes_added": 0, "notes_moved": 0, "skipped": 0, "off_map": len(held_back), "put_on_map": 0}
+              "notes_added": 0, "notes_moved": 0, "skipped": 0, "off_map": len(held_back), "put_on_map": 0,
+              "stages": stages}
     ts = now()
     fake_id = [0]
 
@@ -448,6 +455,15 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 counts["people_linked"] += 1
                 update(node, {"wingmate_id": wm_id})
                 sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage}, linking=True)
+            elif node is not None and node["id"] > 0:
+                # Already here from another lead (e.g. moved from a cold outreach pipeline
+                # to the main one): one contact, the new lead recorded as an alias.
+                counts["people_linked"] += 1
+                if not dry_run:
+                    db.execute("INSERT INTO wingmate_aliases (ref, node_id, seen) VALUES (?, ?, '') "
+                               "ON CONFLICT (ref) DO NOTHING", (wm_id, node["id"]))
+                aliases[wm_id] = (node["id"], "")
+                sync_fields(node, {"stage": stage})
             else:
                 values = {"type": "person", "name": name, "company_id": company["id"], "email": email,
                           "phone": phone, "title": title, "notes": custom_value(contact, "note", "comment"),
@@ -472,6 +488,18 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             counts["people_updated"] += sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage})
         reached_map(node, held)
         lead_contacts.setdefault(lead_id, []).append((bool(contact.get("primary_contact")), node))
+
+    # Who's in this pipeline now. An empty answer from Wingmate when it had leads last time
+    # is more likely a hiccup than an emptied pipeline, so that keeps the old list.
+    if not dry_run:
+        members = {n["id"] for n in lead_nodes.values()} | {n["id"] for pairs in lead_contacts.values() for _, n in pairs}
+        members.discard(None)
+        had = {r["node_id"] for r in db.execute("SELECT node_id FROM wingmate_members WHERE campaign_id = ?", (str(cid),))}
+        if members or not had:
+            for node_id in had - members:
+                db.execute("DELETE FROM wingmate_members WHERE campaign_id = ? AND node_id = ?", (str(cid), node_id))
+            for node_id in members - had:
+                db.execute("INSERT INTO wingmate_members (campaign_id, node_id) VALUES (?, ?)", (str(cid), node_id))
 
     def note_target(lead_id, company):
         """Wingmate notes are about the person: the lead's primary contact, else its first

@@ -7,12 +7,15 @@ Contacts are enrolled; each enrollment walks the steps one at a time. A step com
 from here: email steps are drafts the admin sends from their own mailbox, and every step
 done is recorded as a note on the contact.
 
+A flow can be tied to a Wingmate pipeline (e.g. Cold Outreach): it then adds that pipeline's
+contacts by itself, up to a set number a day, optionally only those at a starting stage.
+
 A contact leaves a flow when it's marked replied or meeting booked, when it's removed, after
-the last step, or when its pipeline stage (synced from Wingmate) reaches one of the flow's
-exit stages.
+the last step, when its pipeline stage (synced from Wingmate) reaches one of the flow's
+exit stages, or when it's no longer in the flow's pipeline (e.g. moved to another one).
 """
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import jsonify, request
 
@@ -29,6 +32,8 @@ MAX_STEPS = 20
 ENDINGS = {"replied": "Replied", "meeting": "Meeting booked", "stopped": "Removed from the flow",
            "finished": "Finished every step", "exited": "Stage reached"}
 CALL_OUTCOMES = ("No answer", "Left voicemail", "Talked", "Wrong number")
+AUTO = "Auto (Wingmate)"  # enrolled_by for contacts a pipeline flow added by itself
+MAX_DAILY = 500
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS flows (
@@ -77,6 +82,7 @@ def loads(text, fallback):
 def flow_row(row):
     return {"id": row["id"], "name": row["name"], "exit_stages": loads(row["exit_stages"], []),
             "steps": loads(row["steps"], []), "created_at": row["created_at"],
+            "pipeline": row["pipeline"], "start_stage": row["start_stage"], "auto_daily": row["auto_daily"],
             "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
 
 
@@ -100,7 +106,73 @@ def clean_flow(data):
     if not steps:
         return None, "Add at least one step"
     stages = [str(s).strip()[:120] for s in (data.get("exit_stages") or []) if str(s).strip()]
-    return {"name": name, "steps": json.dumps(steps), "exit_stages": json.dumps(sorted(set(stages)))}, None
+    pipeline = str(data.get("pipeline") or "").strip()[:60]
+    start = str(data.get("start_stage") or "").strip()[:120] if pipeline else ""
+    daily = min(MAX_DAILY, max(0, core.to_int(data.get("auto_daily")) or 0)) if pipeline else 0
+    if start and start.lower() in {x.lower() for x in stages}:
+        return None, f"“{start}” can't be both the starting stage and an exit stage"
+    return {"name": name, "steps": json.dumps(steps), "exit_stages": json.dumps(sorted(set(stages))),
+            "pipeline": pipeline, "start_stage": start, "auto_daily": daily}, None
+
+
+def pipelines(db):
+    """Connected Wingmate pipelines with their stages in order (as of the last sync)."""
+    stages = loads(core.get_setting(db, "wingmate_stages"), {})
+    out = []
+    for settings, _ in core.wingmate_pipelines(db):
+        cid = str(settings["campaign_id"])
+        out.append({"campaign_id": cid, "name": settings.get("name") or f"Pipeline {cid}",
+                    "main": bool(settings.get("main")), "stages": stages.get(cid, [])})
+    return out
+
+
+def members(db, campaign_id):
+    return {r["node_id"] for r in db.execute("SELECT node_id FROM wingmate_members WHERE campaign_id = ?", (campaign_id,))}
+
+
+def local_day(iso):
+    try:
+        moment = datetime.fromisoformat(iso)
+    except ValueError:
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return (moment.astimezone(LOCAL) if LOCAL else moment).date().isoformat()
+
+
+def auto_enroll(db):
+    """Adds pipeline contacts to the flows tied to that pipeline, up to each flow's daily
+    number. A contact is added to a flow once: one who left it isn't added again."""
+    connected = {p["campaign_id"] for p in pipelines(db)}
+    flows = [flow_row(r) for r in db.execute("SELECT * FROM flows WHERE auto_daily > 0 AND pipeline <> ''")]
+    added = 0
+    day = today().isoformat()
+    for flow in flows:
+        if flow["pipeline"] not in connected or not flow["steps"]:
+            continue
+        rows = db.execute("SELECT node_id, enrolled_by, enrolled_at FROM flow_enrollments WHERE flow_id = ?",
+                          (flow["id"],)).fetchall()
+        room = flow["auto_daily"] - sum(1 for r in rows if r["enrolled_by"] == AUTO and local_day(r["enrolled_at"]) == day)
+        if room <= 0:
+            continue
+        ever = {r["node_id"] for r in rows}
+        exits = {x.lower() for x in flow["exit_stages"]}
+        start = flow["start_stage"].lower()
+        people = db.execute("SELECT n.id, n.stage FROM wingmate_members m JOIN nodes n ON n.id = m.node_id "
+                            "WHERE m.campaign_id = ? AND n.type = 'person' ORDER BY n.id", (flow["pipeline"],)).fetchall()
+        ts = core.now()
+        picked = [p for p in people if p["id"] not in ever and (p["stage"] or "").strip().lower() not in exits
+                  and (not start or (p["stage"] or "").strip().lower() == start)][:room]
+        for p in picked:
+            db.insert("flow_enrollments", {"flow_id": flow["id"], "node_id": p["id"], "status": "active", "step_index": 0,
+                                           "due_on": due_after(flow["steps"][0]["wait_days"]), "enrolled_at": ts,
+                                           "enrolled_by": AUTO, "in_pipeline": 1})
+        if picked:
+            core.log(db, "flow", f"Added {len(picked)} contact{'s' if len(picked) != 1 else ''} from Wingmate to the flow {flow['name']}")
+            added += len(picked)
+    if added:
+        db.commit()
+    return added
 
 
 def end(db, enrollment_id, status, reason=""):
@@ -109,16 +181,28 @@ def end(db, enrollment_id, status, reason=""):
 
 
 def apply_exits(db):
-    """Ends enrollments whose contact's stage reached one of the flow's exit stages."""
-    flows = {r["id"]: loads(r["exit_stages"], []) for r in db.execute("SELECT id, exit_stages FROM flows")}
-    rows = db.execute("SELECT e.id, e.flow_id, n.stage FROM flow_enrollments e JOIN nodes n ON n.id = e.node_id "
-                      "WHERE e.status = 'active'").fetchall()
+    """Ends enrollments whose contact's stage reached one of the flow's exit stages, or who
+    were in the flow's pipeline and aren't any more."""
+    flows = {r["id"]: r for r in db.execute("SELECT id, exit_stages, pipeline FROM flows")}
+    rows = db.execute("SELECT e.id, e.flow_id, e.node_id, e.in_pipeline, n.stage FROM flow_enrollments e "
+                      "JOIN nodes n ON n.id = e.node_id WHERE e.status = 'active'").fetchall()
+    names = {p["campaign_id"]: p["name"] for p in pipelines(db)}
+    inside = {}
     ended = 0
     for r in rows:
-        exits = {s.lower() for s in flows.get(r["flow_id"], [])}
+        flow = flows.get(r["flow_id"])
+        exits = {s.lower() for s in loads(flow["exit_stages"], [])} if flow else set()
         if r["stage"] and r["stage"].strip().lower() in exits:
             end(db, r["id"], "exited", f"Stage reached: {r['stage']}")
             ended += 1
+            continue
+        cid = flow["pipeline"] if flow else ""
+        if r["in_pipeline"] and cid in names:  # only while that pipeline is still connected
+            if cid not in inside:
+                inside[cid] = members(db, cid)
+            if inside[cid] and r["node_id"] not in inside[cid]:
+                end(db, r["id"], "exited", f"Left the {names[cid]} pipeline")
+                ended += 1
     if ended:
         db.commit()
     return ended
@@ -126,10 +210,11 @@ def apply_exits(db):
 
 def payload(db):
     apply_exits(db)
+    auto_enroll(db)  # also tops up each day's new contacts when nobody synced since midnight
     flows = [flow_row(r) for r in db.execute("SELECT * FROM flows ORDER BY name")]
     enrollments = [dict(r) for r in db.execute("SELECT * FROM flow_enrollments ORDER BY id")]
     return {"flows": flows, "enrollments": enrollments, "today": today().isoformat(),
-            "outcomes": list(CALL_OUTCOMES)}
+            "outcomes": list(CALL_OUTCOMES), "pipelines": pipelines(db), "auto": AUTO}
 
 
 def admin_check():
@@ -209,6 +294,7 @@ def enroll(flow_id):
     active = {r["node_id"] for r in db.execute(
         "SELECT node_id FROM flow_enrollments WHERE flow_id = ? AND status = 'active'", (flow_id,))}
     exits = {s.lower() for s in flow["exit_stages"]}
+    inside = members(db, flow["pipeline"]) if flow["pipeline"] else set()
     added, already, at_exit, not_contacts = [], 0, 0, 0
     ts = core.now()
     for node_id in ids:
@@ -222,7 +308,7 @@ def enroll(flow_id):
         else:
             db.insert("flow_enrollments", {"flow_id": flow_id, "node_id": node_id, "status": "active", "step_index": 0,
                                            "due_on": due_after(flow["steps"][0]["wait_days"]), "enrolled_at": ts,
-                                           "enrolled_by": core.actor()})
+                                           "enrolled_by": core.actor(), "in_pipeline": int(node_id in inside)})
             added.append(person["name"])
     if added:
         who = added[0] if len(added) == 1 else f"{len(added)} contacts"
@@ -250,8 +336,10 @@ def act(enrollment_id):
         if e["status"] == "active":
             return core.bad("Already in the flow")
         index = min(e["step_index"], len(steps) - 1)
+        inside = flow["pipeline"] and e["node_id"] in members(db, flow["pipeline"])
         db.execute("UPDATE flow_enrollments SET status = 'active', step_index = ?, due_on = ?, ended_at = '', "
-                   "ended_reason = '' WHERE id = ?", (index, today().isoformat(), enrollment_id))
+                   "ended_reason = '', in_pipeline = ? WHERE id = ?",
+                   (index, today().isoformat(), int(bool(inside)), enrollment_id))
         core.log(db, "flow", f"Put {node['name']} back in the flow {flow['name']}")
         db.commit()
         return jsonify(payload(db))

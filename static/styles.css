@@ -975,6 +975,12 @@ body.ai-open { padding-right: 420px; }
 .flow-step-btns { margin-left: auto; display: inline-flex; gap: 2px; }
 .flow-exits { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
 .flow-exits legend { font-size: 12.5px; font-weight: 650; padding: 0 4px; }
+.flow-source { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+.flow-source legend { font-size: 12.5px; font-weight: 650; padding: 0 4px; }
+.flow-source label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.flow-source .flow-daily { display: block; }
+.flow-source .flow-daily input { width: 64px; margin: 0 4px; }
+.flow-source p { margin: 0; }
 .flow-editor code { font-size: 11.5px; background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
 .flow-enroll { display: flex; align-items: center; gap: 6px; margin: 8px 16px 0; }
 .flow-enroll select { flex: 1; min-width: 0; }

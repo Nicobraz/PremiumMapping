@@ -2449,7 +2449,8 @@ panel.addEventListener('submit', async (evt) => {
       renderWingmateSection();
     } else if (form.dataset.form === 'wm-pipeline-save') {
       const i = state.wmInspect;
-      state.wingmate = await api('POST', '/api/wingmate/pipelines', { token: i.token, campaign_id: i.campaign_id, from_stage: data.from_stage });
+      state.wingmate = await api('POST', '/api/wingmate/pipelines', { token: i.token, campaign_id: i.campaign_id,
+        from_stage: data.from_stage === 'never' ? '' : data.from_stage, keep_off_map: data.from_stage === 'never' });
       state.wmInspect = null;
       state.panelDirty = false;
       renderWingmateSection();
@@ -2687,13 +2688,14 @@ const WM_LABELS = [
   ['people_linked', 'person linked', 'people linked'], ['people_updated', 'person updated', 'people updated'],
   ['notes_added', 'note added', 'notes added'], ['notes_moved', 'note moved to its contact', 'notes moved to their contacts'],
   ['put_on_map', 'lead reached the map stage', 'leads reached the map stage'],
+  ['flow_added', 'contact added to a flow', 'contacts added to flows'],
 ];
 
 function wingmateCounts(r, preview) {
   const parts = WM_LABELS.filter(([key]) => r[key]).map(([key, one, many]) =>
     `${r[key]} ${(r[key] === 1 ? one : many).replace(preview ? /added|linked|updated/ : /$^/, (w) => `to be ${w}`)}`);
   if (preview && r.notes_to_check) parts.push(`notes checked on ${plural(r.notes_to_check, 'company', 'companies')}`);
-  if (r.off_map) parts.push(`${plural(r.off_map, 'lead', 'leads')} before the map stage kept off the map`);
+  if (r.off_map) parts.push(`${plural(r.off_map, 'lead', 'leads')} kept off the map`);
   return parts.length ? parts.join(' · ') : 'Everything already up to date';
 }
 
@@ -2743,7 +2745,7 @@ function wingmateSectionHtml() {
 function extraPipelinesHtml(w) {
   const list = w.extra_pipelines || [];
   const rows = list.map((p) => `<li><span><b>${esc(p.name || p.campaign_id)}</b>
-      <span class="muted"> · all contacts; on the map ${p.from_stage ? `from “${esc(p.from_stage)}” on` : 'at every stage'}</span></span>
+      <span class="muted"> · all contacts; ${p.keep_off_map ? 'kept off the map' : `on the map ${p.from_stage ? `from “${esc(p.from_stage)}” on` : 'at every stage'}`}</span></span>
       <button type="button" class="link-btn" data-wm-remove="${esc(p.campaign_id)}">Remove</button></li>`).join('');
   const i = state.wmInspect;
   const pick = i ? `<form class="rep-form" data-form="wm-pipeline-save">
@@ -2752,8 +2754,9 @@ function extraPipelinesHtml(w) {
         <select name="from_stage">
           <option value="">Every stage</option>
           ${i.stages.map((st) => `<option value="${esc(st.name)}">${esc(st.name)} (${st.leads})</option>`).join('')}
+          <option value="never">Never: keep them all off the map</option>
         </select></label>
-      <p class="muted">Stages are listed in pipeline order. Every lead and contact comes into PSS Connect and can be searched; ones before the stage you pick are kept off the map until they reach it (or someone puts them on it).</p>
+      <p class="muted">Stages are listed in pipeline order. Every lead and contact comes into PSS Connect and can be searched; ones before the stage you pick are kept off the map until they reach it (or someone puts them on it). <b>Never</b> suits a cold outreach list: its contacts go on the map once they show up in another pipeline, such as the main one.</p>
       <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">Save pipeline</button>
         <button type="button" class="btn btn-sm btn-ghost" data-wm-act="cancel-pipeline">Cancel</button></div>
     </form>` : `<form class="rep-form" data-form="wm-pipeline-check">
@@ -3763,6 +3766,7 @@ function flowDetailHtml(f) {
       <h3 class="flow-title">${esc(f.name)}</h3>
       <p class="muted">${[`${c.active || 0} active`, c.replied ? `${c.replied} replied` : '', c.meeting ? plural(c.meeting, 'meeting booked', 'meetings booked') : '', c.finished ? `${c.finished} finished` : ''].filter(Boolean).join(' · ')}</p>
       <ol class="flow-steps">${f.steps.map(stepSummary).join('')}</ol>
+      ${f.pipeline ? `<p class="muted">${flowSourceText(f)}</p>` : ''}
       ${f.exit_stages.length ? `<p class="muted">Contacts leave automatically at: ${f.exit_stages.map((s) => `<span class="stage-chip">${esc(s)}</span>`).join(' ')}</p>` : ''}
       <div class="row-btns">
         <button type="button" class="btn btn-sm" data-flow-act="edit">Edit flow</button>
@@ -3784,8 +3788,39 @@ function knownStages() {
   return [...stages.values()].sort((a, b) => a.localeCompare(b));
 }
 
+function flowPipeline(id) {
+  return id ? (state.flows?.pipelines || []).find((p) => p.campaign_id === id) || { campaign_id: id, name: 'A removed pipeline', stages: [] } : null;
+}
+
+function flowSourceText(f) {
+  const p = flowPipeline(f.pipeline);
+  if (!p) return '';
+  const from = f.start_stage ? ` at “${esc(f.start_stage)}”` : '';
+  return f.auto_daily
+    ? `Adds up to ${f.auto_daily} new contacts a day from the <b>${esc(p.name)}</b> pipeline${from}. Contacts leave when they're no longer in that pipeline.`
+    : `Tied to the <b>${esc(p.name)}</b> pipeline (contacts are added by hand). Contacts from it leave when they're no longer in it.`;
+}
+
 function flowEditorHtml(d) {
-  const stages = [...new Set([...knownStages(), ...d.exit_stages])];
+  const pipes = state.flows?.pipelines || [];
+  const pipe = flowPipeline(d.pipeline);
+  // The pipeline's own stages in Wingmate's order; otherwise every stage seen here.
+  const stages = [...new Set([...(pipe?.stages.length ? pipe.stages : knownStages()), ...d.exit_stages])];
+  const source = `<fieldset class="flow-source"><legend>Where contacts come from</legend>
+      <label>Wingmate pipeline
+        <select name="pipeline" data-flow-pipeline>
+          <option value="">None: add contacts by hand</option>
+          ${pipes.map((p) => `<option value="${esc(p.campaign_id)}" ${d.pipeline === p.campaign_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+          ${d.pipeline && !pipes.some((p) => p.campaign_id === d.pipeline) ? `<option value="${esc(d.pipeline)}" selected>${esc(pipe.name)}</option>` : ''}
+        </select></label>
+      ${pipe ? `<label>Start contacts who are at
+          <select name="start_stage"><option value="">Any stage</option>
+            ${[...new Set([...stages, ...(d.start_stage ? [d.start_stage] : [])])].map((st) => `<option value="${esc(st)}" ${d.start_stage === st ? 'selected' : ''}>${esc(st)}</option>`).join('')}
+          </select></label>
+        <label class="flow-daily">Add up to <input name="auto_daily" type="number" min="0" max="500" value="${d.auto_daily}" aria-label="New contacts a day"> new contacts a day automatically (0 = only by hand)</label>
+        <p class="muted">New contacts are picked up when Wingmate syncs. Anyone who leaves the pipeline in Wingmate (moved or deleted) leaves the flow too.</p>`
+        : pipes.length ? '' : '<p class="muted">Connect pipelines in ⚙ → Wingmate to have a flow fill itself.</p>'}
+    </fieldset>`;
   const steps = d.steps.map((s, i) => `<li class="flow-step-edit" data-step="${i}">
       <div class="flow-step-row">
         <b>${i + 1}.</b>
@@ -3803,6 +3838,7 @@ function flowEditorHtml(d) {
   return `<form class="section rep-form flow-editor" data-form="flow-edit">
       <button type="button" class="link-btn" data-flow-act="cancel-edit">‹ Cancel</button>
       <input name="name" required maxlength="120" value="${esc(d.name)}" placeholder="Flow name, e.g. New HOA outreach" aria-label="Flow name">
+      ${source}
       <ol class="flow-step-list">${steps}</ol>
       <div class="row-btns">
         ${Object.entries(FLOW_KINDS).map(([k, label]) => `<button type="button" class="btn btn-sm" data-step-add="${k}">+ ${label}</button>`).join('')}
@@ -3824,6 +3860,9 @@ function readFlowEditor() {
   if (!form || !d) return d;
   d.name = form.elements.name.value;
   d.exit_stages = [...form.querySelectorAll('[name="exit_stage"]:checked')].map((x) => x.value);
+  d.pipeline = form.elements.pipeline?.value ?? d.pipeline;
+  d.start_stage = form.elements.start_stage?.value ?? (d.pipeline ? d.start_stage : '');
+  d.auto_daily = form.elements.auto_daily ? Number(form.elements.auto_daily.value) || 0 : (d.pipeline ? d.auto_daily : 0);
   form.querySelectorAll('.flow-step-edit').forEach((li) => {
     const s = d.steps[Number(li.dataset.step)];
     s.kind = li.querySelector('[name="kind"]').value;
@@ -3883,7 +3922,7 @@ panel.addEventListener('click', async (evt) => {
   const act = btn.dataset.flowAct;
   const flow = flowById(state.flowView);
   if (act === 'new') {
-    state.flowEdit = { name: '', exit_stages: [], steps: [{ kind: 'email', wait_days: 0, subject: '', body: '' }] };
+    state.flowEdit = { name: '', exit_stages: [], pipeline: '', start_stage: '', auto_daily: 0, steps: [{ kind: 'email', wait_days: 0, subject: '', body: '' }] };
     renderFlowsPanel();
   } else if (act === 'edit' && flow) {
     state.flowEdit = JSON.parse(JSON.stringify(flow));
@@ -3924,10 +3963,20 @@ panel.addEventListener('click', async (evt) => {
   }
 });
 
+// Picking a pipeline redraws the editor with that pipeline's stages (in Wingmate's order).
+panel.addEventListener('change', (evt) => {
+  if (!evt.target.matches('[data-flow-pipeline]')) return;
+  const d = readFlowEditor();
+  d.start_stage = '';
+  if (d.pipeline && !d.auto_daily) d.auto_daily = 20;
+  state.panelDirty = true;
+  renderFlowsPanel();
+});
+
 async function submitFlowForm(form, data) {
   if (form.dataset.form === 'flow-edit') {
     const d = readFlowEditor();
-    const body = { name: d.name, exit_stages: d.exit_stages, steps: d.steps };
+    const body = { name: d.name, exit_stages: d.exit_stages, steps: d.steps, pipeline: d.pipeline, start_stage: d.start_stage, auto_daily: d.auto_daily };
     const r = d.id ? await flowCall('PUT', `/api/flows/${d.id}`, body, 'Flow saved') : await flowCall('POST', '/api/flows', body, 'Flow created');
     if (!r) return;
     state.flowEdit = null;
