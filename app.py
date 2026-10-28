@@ -743,6 +743,7 @@ def require_sign_in():
 # ---------- pages ----------
 
 @app.route("/")
+@app.route("/flows")  # outbound flows on a page of their own (app.js shows them full width)
 def index():
     return send_from_directory(STATIC_DIR, "index.html")
 

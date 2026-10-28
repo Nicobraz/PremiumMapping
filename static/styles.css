@@ -946,9 +946,11 @@ body.ai-open { padding-right: 420px; }
 }
 .flow-kind.kind-email { background: #e8f1fb; color: #1d4f86; border-color: #c7dbf2; }
 .flow-kind.kind-call { background: #e9f7ef; color: #166534; border-color: #c4e8d1; }
+.flow-kind.kind-linkedin { background: #e7f0f8; color: #0a4f8a; border-color: #bcd5ea; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .flow-kind.kind-email { background: #172a40; color: #9cc4f0; border-color: #284766; }
   :root:not([data-theme="light"]) .flow-kind.kind-call { background: #14301f; color: #8fd9a8; border-color: #23523a; }
+  :root:not([data-theme="light"]) .flow-kind.kind-linkedin { background: #13283b; color: #8ec3ef; border-color: #244a6b; }
 }
 .flow-task input, .flow-task textarea, .flow-task select, .flow-editor textarea, .flow-editor select, .flow-enroll select {
   width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
@@ -987,3 +989,7 @@ body.ai-open { padding-right: 420px; }
 .flow-bulk { margin: 6px 0 0; font-size: 12.5px; font-weight: 600; }
 .flow-bulk span { white-space: nowrap; }
 .flow-on-card { margin: 8px 16px 0; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; }
+
+/* The Flows page (/flows): the flows fill the screen instead of a side panel. */
+.flows-page #panel[data-kind="flows"] { width: 100%; border-left: 0; box-shadow: none; }
+.flows-page #panel[data-kind="flows"] #flows-body { max-width: 860px; margin: 0 auto; }

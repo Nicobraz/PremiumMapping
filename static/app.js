@@ -3,6 +3,10 @@
 
 // ---------- constants ----------
 
+// Flows have a page of their own (/flows), opened in its own browser tab.
+const FLOWS_PAGE = location.pathname === '/flows';
+if (FLOWS_PAGE) { document.body.classList.add('flows-page'); document.title = 'Flows · PSS Connect'; }
+
 const REL = {
   knows:      { label: 'Knows',      color: '#64748b', directed: false, verb: 'knows' },
   reports_to: { label: 'Reports to', color: '#2563eb', directed: true,  verb: 'reports to', back: 'manages' },
@@ -1250,6 +1254,11 @@ function notesFor(nodeId) {
 }
 
 function closePanel() {
+  // On the Flows page, closing a contact's card goes back to the flows; closing them goes to the map.
+  if (FLOWS_PAGE && state.isAdmin) {
+    if (state.panel?.kind === 'flows') { location.href = '/'; return; }
+    if (state.panel) { openFlowsPanel(state.flowsTab); return; }
+  }
   panel.hidden = true;
   panel.innerHTML = '';
   state.panel = null;
@@ -1262,6 +1271,7 @@ function closePanel() {
 function showPanel(desc, html) {
   closeActivity();
   state.panel = desc;
+  panel.dataset.kind = desc.kind || '';
   state.panelDirty = false;
   panel.innerHTML = html;
   panel.hidden = false;
@@ -2899,6 +2909,7 @@ function setAdmin(on) {
   state.isAdmin = !!on;
   renderFlowsBadge();
   if (on) loadFlows();
+  if (on && FLOWS_PAGE && !state.panel) openFlowsPanel();
   if (state.panel?.kind === 'node-edit' && !state.panelDirty) openEditPanel(state.panel.id);
 }
 
@@ -3082,7 +3093,7 @@ document.addEventListener('keydown', (evt) => {
   if (!filterMenu.hidden) toggleFilterMenu(false);
   else if (state.connecting) stopConnect();
   else if (state.focusId != null) clearFocus();
-  else if (state.panel) closePanel();
+  else if (state.panel && !(FLOWS_PAGE && state.panel.kind === 'flows')) closePanel();  // Escape doesn't leave the Flows page
   else closeActivity();
 });
 
@@ -3177,7 +3188,7 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
     signout: () => click('#me-chip'),
     ai: () => setAiOpen(true),
     'wm-sync': () => refreshWingmate(),
-    flows: () => openFlowsPanel(),
+    flows: () => { if (FLOWS_PAGE) openFlowsPanel(); else location.href = '/flows'; },
   })[action]?.();
   if (action !== 'filter' && action !== 'activity') syncNav();
 }));
@@ -3597,7 +3608,17 @@ loadMe();
 // Apollo-style sequences: a flow is a list of email / call / task steps with waits in days.
 // Due steps show up under "To do" with the email already written; nothing is sent from here.
 
-const FLOW_KINDS = { email: 'Email', call: 'Call', task: 'Task' };
+const FLOW_KINDS = { email: 'Email', call: 'Call', linkedin: 'LinkedIn', task: 'Task' };
+// Every new flow starts as this sequence; the waits are days after the step before.
+const FLOW_TEMPLATE = [
+  { kind: 'email', wait_days: 0, subject: '', body: '' },
+  { kind: 'call', wait_days: 2, subject: '', body: '' },
+  { kind: 'email', wait_days: 2, subject: '', body: '' },
+  { kind: 'linkedin', wait_days: 2, subject: '', body: 'Send a connection request' },
+  { kind: 'call', wait_days: 3, subject: '', body: '' },
+  { kind: 'email', wait_days: 3, subject: '', body: '' },
+  { kind: 'linkedin', wait_days: 3, subject: '', body: 'Hi {{first_name}}, …' },
+];
 const FLOW_FIELDS = ['first_name', 'last_name', 'name', 'company', 'title', 'city', 'sender'];
 const FLOW_STATUS = { active: 'In the flow', replied: 'Replied', meeting: 'Meeting booked', stopped: 'Removed', finished: 'Finished', exited: 'Stage reached' };
 
@@ -3671,7 +3692,7 @@ function renderFlowsPanel() {
   const scroll = panel.scrollTop;
   body.innerHTML = `<div class="panel-head">
       <h2>Outbound flows <span class="pill pill-company">Admin</span></h2>
-      <button class="icon-btn" data-act="close" aria-label="Close">×</button>
+      <button class="${FLOWS_PAGE ? 'btn btn-sm' : 'icon-btn'}" data-act="close" aria-label="${FLOWS_PAGE ? 'Back to the map' : 'Close'}">${FLOWS_PAGE ? '‹ Map' : '×'}</button>
     </div>
     <div class="dir-controls"><div class="tabs-seg" role="tablist">
       <button type="button" role="tab" class="${tab === 'todo' ? 'on' : ''}" aria-selected="${tab === 'todo'}" data-flow-tab="todo">To do${due.length ? ` (${due.length})` : ''}</button>
@@ -3709,6 +3730,13 @@ function taskHtml(e) {
     work = `${n.phone ? `<a class="btn btn-sm" href="tel:${esc(n.phone.replace(/[^\d+]/g, ''))}">📞 Call ${esc(n.phone)}</a>` : '<div class="flow-to error-text">No phone number on this contact.</div>'}
       ${step.body ? `<div class="flow-script">${esc(fillTemplate(step.body, n))}</div>` : ''}
       <select class="flow-outcome" aria-label="How did it go?">${state.flows.outcomes.map((o) => `<option>${esc(o)}</option>`).join('')}</select>`;
+  } else if (step.kind === 'linkedin') {
+    const find = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent([n.name, company?.name].filter(Boolean).join(' '))}`;
+    work = `<textarea class="flow-body" rows="3" aria-label="LinkedIn message">${esc(fillTemplate(step.body, n))}</textarea>
+      <div class="row-btns">
+        <a class="btn btn-sm" href="${esc(find)}" target="_blank" rel="noopener">Find on LinkedIn</a>
+        <button type="button" class="btn btn-sm btn-ghost" data-flow-act="copy">Copy text</button>
+      </div>`;
   } else {
     work = step.body ? `<div class="flow-script">${esc(fillTemplate(step.body, n))}</div>` : '';
   }
@@ -3922,7 +3950,7 @@ panel.addEventListener('click', async (evt) => {
   const act = btn.dataset.flowAct;
   const flow = flowById(state.flowView);
   if (act === 'new') {
-    state.flowEdit = { name: '', exit_stages: [], pipeline: '', start_stage: '', auto_daily: 0, steps: [{ kind: 'email', wait_days: 0, subject: '', body: '' }] };
+    state.flowEdit = { name: '', exit_stages: [], pipeline: '', start_stage: '', auto_daily: 0, steps: FLOW_TEMPLATE.map((s) => ({ ...s })) };
     renderFlowsPanel();
   } else if (act === 'edit' && flow) {
     state.flowEdit = JSON.parse(JSON.stringify(flow));
@@ -4023,6 +4051,7 @@ function bulkFlowHtml(count) {
 }
 
 $('#btn-flows').addEventListener('click', () => {
-  if (state.panel?.kind === 'flows') closePanel(); else openFlowsPanel();
+  if (FLOWS_PAGE) openFlowsPanel();
+  else window.open('/flows', 'pss-flows');  // reuses the Flows tab when it's already open
 });
 })();

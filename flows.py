@@ -27,7 +27,7 @@ except Exception:  # no tz database on this machine
 
 core = None  # the app module, set by install()
 
-STEP_KINDS = ("email", "call", "task")
+STEP_KINDS = ("email", "call", "linkedin", "task")
 MAX_STEPS = 20
 ENDINGS = {"replied": "Replied", "meeting": "Meeting booked", "stopped": "Removed from the flow",
            "finished": "Finished every step", "exited": "Stage reached"}
@@ -350,7 +350,8 @@ def act(enrollment_id):
     if action in ("done", "skip"):
         if action == "done":
             outcome = str(data.get("outcome") or "").strip()[:60]
-            what = {"email": "Email sent", "call": f"Called: {outcome or 'logged'}", "task": "Done"}[step["kind"]]
+            what = {"email": "Email sent", "call": f"Called: {outcome or 'logged'}", "linkedin": "LinkedIn done",
+                    "task": "Done"}[step["kind"]]
             if step["kind"] == "email" and step["subject"]:
                 what += f" (“{str(data.get('subject') or step['subject'])[:200]}”)"
             body = f"Flow {label}: {what}." + (f"\n{note}" if note else "")
