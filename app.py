@@ -1899,19 +1899,25 @@ def wingmate_client(db):
     return wingmate.WingmateClient(token, campaign_id) if token and campaign_id else None
 
 
-# Besides the main pipeline, an admin can add more Wingmate pipelines (each has its own
-# token). Every lead comes in; a pipeline can show its leads on the map from a given stage
-# on, or never (keep_off_map, e.g. a cold outreach list nobody has contacted yet).
+# Besides the main pipeline, an admin can add more Wingmate pipelines. A company token
+# reads every pipeline, so an extra pipeline saved without a token of its own uses the
+# main one. Every lead comes in; a pipeline can show its leads on the map from a given
+# stage on, or never (keep_off_map, e.g. a cold outreach list nobody has contacted yet).
 def extra_pipelines(db):
     try:
         items = json.loads(get_setting(db, "wingmate_extra_pipelines") or "[]")
     except ValueError:
         items = []
-    return [p for p in items if isinstance(p, dict) and p.get("token") and p.get("campaign_id")]
+    main = get_setting(db, "wingmate_token")
+    return [{**p, "own_token": p.get("token", ""), "token": p.get("token") or main} for p in items
+            if isinstance(p, dict) and p.get("campaign_id") and (p.get("token") or main)]
 
 
 def save_extra_pipelines(db, items):
-    set_setting(db, "wingmate_extra_pipelines", json.dumps(items))
+    """Stores each pipeline with only its own token, so one on the main token follows it."""
+    stored = [{**{k: v for k, v in p.items() if k != "own_token"}, "token": p.get("own_token", p.get("token", ""))}
+              for p in items]
+    set_setting(db, "wingmate_extra_pipelines", json.dumps(stored))
 
 
 def wingmate_pipelines(db):
@@ -2015,7 +2021,7 @@ def wingmate_status(db):
         "cron_url": f"{request.host_url}api/wingmate/cron?key={cron_key}" if cron_key else "",
         "extra_pipelines": [{"campaign_id": p["campaign_id"], "name": p.get("name", ""), "from_stage": p.get("from_stage", ""),
                              "keep_off_map": bool(p.get("keep_off_map")),
-                             "token_hint": f"…{p['token'][-4:]}"} for p in extra_pipelines(db)],
+                             "own_token": bool(p["own_token"])} for p in extra_pipelines(db)],
     }
 
 
@@ -2072,13 +2078,39 @@ def inspect_pipeline(token, campaign_id):
 @admin_only
 def inspect_wingmate_pipeline():
     data = request.get_json(silent=True) or {}
-    token, campaign_id = str(data.get("token") or "").strip(), str(data.get("campaign_id") or "").strip()
+    campaign_id = str(data.get("campaign_id") or "").strip()
+    token = str(data.get("token") or "").strip() or get_setting(get_db(), "wingmate_token")
     if not token or not campaign_id:
-        return bad("Enter the pipeline's API token and campaign ID")
+        return bad("Enter the pipeline's campaign ID")
     try:
         return jsonify(inspect_pipeline(token, campaign_id))
     except wingmate.WingmateError as e:
         return bad(str(e))
+
+
+@app.get("/api/wingmate/pipelines/discover")
+@admin_only
+def discover_wingmate_pipelines():
+    """The company's other pipelines, found through the main token: Wingmate has no
+    "list pipelines" call, but each user's pipelines can be listed."""
+    db = get_db()
+    main = wingmate_client(db)
+    if not main:
+        return bad("Connect the main pipeline first")
+    connected = {main.campaign_id} | {p["campaign_id"] for p in extra_pipelines(db)}
+    found = {}
+    try:
+        users = main.get_all(f"/campaigns/{main.campaign_id}/users")
+        for user in users[:40]:
+            for c in wingmate.unwrap_list(main.get(f"/users/{user.get('id')}/campaigns")):
+                cid = str(c.get("id") or "")
+                if cid and cid not in connected:
+                    found.setdefault(cid, str(c.get("name") or ""))
+    except wingmate.WingmateError as e:
+        if not found:
+            return bad(f"Couldn't list the pipelines ({e}) Enter a campaign ID instead.")
+    return jsonify({"pipelines": [{"campaign_id": k, "name": v} for k, v in
+                                  sorted(found.items(), key=lambda kv: kv[1].lower())]})
 
 
 @app.post("/api/wingmate/pipelines")
@@ -2088,9 +2120,10 @@ def add_wingmate_pipeline():
     db = get_db()
     campaign_id = str(data.get("campaign_id") or "").strip()
     existing = next((p for p in extra_pipelines(db) if p["campaign_id"] == campaign_id), None)
-    token = str(data.get("token") or "").strip() or (existing or {}).get("token", "")
+    own_token = str(data.get("token") or "").strip() or (existing or {}).get("own_token", "")
+    token = own_token or get_setting(db, "wingmate_token")
     if not token or not campaign_id:
-        return bad("Enter the pipeline's API token and campaign ID")
+        return bad("Enter the pipeline's campaign ID")
     if campaign_id == get_setting(db, "wingmate_campaign_id"):
         return bad("That's already the main pipeline")
     try:
@@ -2102,7 +2135,7 @@ def add_wingmate_pipeline():
     if from_stage and from_stage.lower() not in {st["name"].lower() for st in info["stages"]}:
         return bad(f"“{from_stage}” isn't a stage in that pipeline")
     items = [p for p in extra_pipelines(db) if p["campaign_id"] != campaign_id]
-    items.append({"token": token, "campaign_id": campaign_id, "name": info["name"], "from_stage": from_stage,
+    items.append({"token": own_token, "campaign_id": campaign_id, "name": info["name"], "from_stage": from_stage,
                   "keep_off_map": keep_off_map})
     save_extra_pipelines(db, items)
     if not get_setting(db, "wingmate_cron_key"):

@@ -2462,6 +2462,7 @@ panel.addEventListener('submit', async (evt) => {
       state.wingmate = await api('POST', '/api/wingmate/pipelines', { token: i.token, campaign_id: i.campaign_id,
         from_stage: data.from_stage === 'never' ? '' : data.from_stage, keep_off_map: data.from_stage === 'never' });
       state.wmInspect = null;
+      state.wmFound = null;
       state.panelDirty = false;
       renderWingmateSection();
       toast(`Added ${i.name || 'the pipeline'}. Use Preview, then Sync now.`);
@@ -2769,16 +2770,28 @@ function extraPipelinesHtml(w) {
       <p class="muted">Stages are listed in pipeline order. Every lead and contact comes into PSS Connect and can be searched; ones before the stage you pick are kept off the map until they reach it (or someone puts them on it). <b>Never</b> suits a cold outreach list: its contacts go on the map once they show up in another pipeline, such as the main one.</p>
       <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">Save pipeline</button>
         <button type="button" class="btn btn-sm btn-ghost" data-wm-act="cancel-pipeline">Cancel</button></div>
-    </form>` : `<form class="rep-form" data-form="wm-pipeline-check">
-      <input name="token" type="password" autocomplete="off" required placeholder="That pipeline's API token" aria-label="Pipeline API token">
+    </form>` : `${wmFoundHtml()}<form class="rep-form" data-form="wm-pipeline-check">
       <input name="campaign_id" required placeholder="Campaign (pipeline) ID" aria-label="Campaign ID">
+      <input name="token" type="password" autocomplete="off" placeholder="API token (blank: use the main one)" aria-label="Pipeline API token">
+      <p class="muted">A company API token reads every pipeline, so leave the token blank unless this pipeline has its own.</p>
       <div class="row-btns"><button type="submit" class="btn btn-sm">Check pipeline</button></div>
     </form>`;
   return `<div class="wm-pipelines">
     <h4>Other pipelines</h4>
     ${rows ? `<ul class="wm-pipeline-list">${rows}</ul>` : '<p class="muted">Only the main pipeline syncs.</p>'}
-    <details ${i ? 'open' : ''}><summary>+ Add another pipeline</summary>${pick}</details>
+    <details ${i || state.wmFound ? 'open' : ''}><summary>+ Add another pipeline</summary>${pick}</details>
   </div>`;
+}
+
+function wmFoundHtml() {
+  const f = state.wmFound;
+  const btn = `<div class="row-btns"><button type="button" class="btn btn-sm btn-primary" data-wm-act="discover" ${f === 'loading' ? 'disabled' : ''}>${f === 'loading' ? 'Looking…' : 'Find my pipelines'}</button></div>`;
+  if (!f || f === 'loading') return btn;
+  if (f.error) return `${btn}<p class="error-text">${esc(f.error)}</p>`;
+  if (!f.pipelines.length) return `${btn}<p class="muted">No other pipelines found. Enter a campaign ID below.</p>`;
+  return `${btn}<ul class="wm-pipeline-list">${f.pipelines.map((p) => `<li><span><b>${esc(p.name || p.campaign_id)}</b></span>
+      <button type="button" class="btn btn-sm" data-wm-act="pick:${esc(p.campaign_id)}">Add</button></li>`).join('')}</ul>
+    <p class="muted">Or enter a campaign ID:</p>`;
 }
 
 function renderWingmateSection() {
@@ -2810,7 +2823,17 @@ async function loadWingmate() {
 
 async function handleWingmateAction(act) {
   try {
-    if (act === 'cancel-pipeline') {
+    if (act === 'discover') {
+      state.wmFound = 'loading';
+      renderWingmateSection();
+      try { state.wmFound = await api('GET', '/api/wingmate/pipelines/discover'); }
+      catch (err) { state.wmFound = { error: err.message }; }
+      renderWingmateSection();
+    } else if (act.startsWith('pick:')) {
+      const info = await api('POST', '/api/wingmate/pipelines/inspect', { campaign_id: act.slice(5) });
+      state.wmInspect = { ...info, token: '' };
+      renderWingmateSection();
+    } else if (act === 'cancel-pipeline') {
       state.wmInspect = null;
       renderWingmateSection();
     } else if (act === 'edit' || act === 'cancel-edit') {
@@ -3875,7 +3898,7 @@ function flowEditorHtml(d) {
           ${pipes.map((p) => `<option value="${esc(p.campaign_id)}" ${d.pipeline === p.campaign_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
           ${d.pipeline && !pipes.some((p) => p.campaign_id === d.pipeline) ? `<option value="${esc(d.pipeline)}" selected>${esc(pipe.name)}</option>` : ''}
         </select></label>
-      <p class="muted">Lists the ${plural(pipes.length, 'pipeline', 'pipelines')} connected in ⚙ → Wingmate. Wingmate gives each pipeline its own API token, so to see another one here, add it there under <b>+ Add another pipeline</b>.</p>
+      <p class="muted">Lists the ${plural(pipes.length, 'pipeline', 'pipelines')} connected in ⚙ → Wingmate. To see another one here, add it there under <b>+ Add another pipeline</b> → <b>Find my pipelines</b>.</p>
       ${pipe ? `<label>Start contacts who are at
           <select name="start_stage"><option value="">Any stage</option>
             ${[...new Set([...stages, ...(d.start_stage ? [d.start_stage] : [])])].map((st) => `<option value="${esc(st)}" ${d.start_stage === st ? 'selected' : ''}>${esc(st)}</option>`).join('')}
