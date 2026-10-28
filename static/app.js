@@ -2789,8 +2789,10 @@ function wmFoundHtml() {
   if (!f || f === 'loading') return btn;
   if (f.error) return `${btn}<p class="error-text">${esc(f.error)}</p>`;
   if (!f.pipelines.length) return `${btn}<p class="muted">No other pipelines found. Enter a campaign ID below.</p>`;
-  return `${btn}<ul class="wm-pipeline-list">${f.pipelines.map((p) => `<li><span><b>${esc(p.name || p.campaign_id)}</b></span>
-      <button type="button" class="btn btn-sm" data-wm-act="pick:${esc(p.campaign_id)}">Add</button></li>`).join('')}</ul>
+  return `${btn}<ul class="wm-pipeline-list">${f.pipelines.map((p) => `<li><span><b>${esc(p.name || p.campaign_id)}</b>
+        ${p.needs_token ? '<span class="muted"> · needs its own API token</span>' : ''}</span>
+      <button type="button" class="btn btn-sm" data-wm-act="${p.needs_token ? 'fill' : 'pick'}:${esc(p.campaign_id)}">Add</button></li>`).join('')}</ul>
+    ${f.pipelines.some((p) => p.needs_token) ? '<p class="muted">The main pipeline\'s token can\'t read the ones marked; in Wingmate, get that pipeline\'s own API token and paste it below.</p>' : ''}
     <p class="muted">Or enter a campaign ID:</p>`;
 }
 
@@ -2833,6 +2835,12 @@ async function handleWingmateAction(act) {
       const info = await api('POST', '/api/wingmate/pipelines/inspect', { campaign_id: act.slice(5) });
       state.wmInspect = { ...info, token: '' };
       renderWingmateSection();
+    } else if (act.startsWith('fill:')) {
+      const form = $('[data-form=wm-pipeline-check]');
+      form.campaign_id.value = act.slice(5);
+      form.token.required = true;
+      form.token.placeholder = 'That pipeline\'s API token';
+      form.token.focus();
     } else if (act === 'cancel-pipeline') {
       state.wmInspect = null;
       renderWingmateSection();

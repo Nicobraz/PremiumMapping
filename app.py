@@ -2092,7 +2092,9 @@ def inspect_wingmate_pipeline():
 @admin_only
 def discover_wingmate_pipelines():
     """The company's other pipelines, found through the main token: Wingmate has no
-    "list pipelines" call, but each user's pipelines can be listed."""
+    "list pipelines" call, but each user's pipelines can be listed. Only pipelines of the
+    main pipeline's company count (Wingmate's own support staff sit on other companies'
+    pipelines too), and each says whether the main token can read it."""
     db = get_db()
     main = wingmate_client(db)
     if not main:
@@ -2100,17 +2102,27 @@ def discover_wingmate_pipelines():
     connected = {main.campaign_id} | {p["campaign_id"] for p in extra_pipelines(db)}
     found = {}
     try:
+        company = str(main.campaign().get("company_id") or "")
+        if not company:
+            return bad("Wingmate didn't say which company the main pipeline belongs to. Enter a campaign ID instead.")
         users = main.get_all(f"/campaigns/{main.campaign_id}/users")
-        for user in users[:40]:
+        for user in [u for u in users if not u.get("internal_account")][:40]:
             for c in wingmate.unwrap_list(main.get(f"/users/{user.get('id')}/campaigns")):
                 cid = str(c.get("id") or "")
-                if cid and cid not in connected:
+                if cid and cid not in connected and str(c.get("company_id") or "") == company:
                     found.setdefault(cid, str(c.get("name") or ""))
     except wingmate.WingmateError as e:
         if not found:
             return bad(f"Couldn't list the pipelines ({e}) Enter a campaign ID instead.")
-    return jsonify({"pipelines": [{"campaign_id": k, "name": v} for k, v in
-                                  sorted(found.items(), key=lambda kv: kv[1].lower())]})
+    out = []
+    for cid, name in sorted(found.items(), key=lambda kv: kv[1].lower()):
+        try:
+            main.get(f"/campaigns/{cid}/leads", {"page": 1, "per_page": 1})
+            readable = True
+        except wingmate.WingmateError:
+            readable = False
+        out.append({"campaign_id": cid, "name": name, "needs_token": not readable})
+    return jsonify({"pipelines": out})
 
 
 @app.post("/api/wingmate/pipelines")
