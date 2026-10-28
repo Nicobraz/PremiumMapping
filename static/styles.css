@@ -929,3 +929,55 @@ body.ai-open { padding-right: 420px; }
   border: 1px dashed var(--border); color: var(--muted); font-size: 10.5px; font-weight: 600;
 }
 .conn-list .who .off-map-chip { display: inline-block; font-size: 10.5px; }
+
+/* ---------- outbound flows (admins) ---------- */
+.flow-tasks { list-style: none; margin: 0; padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.flow-task {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--surface);
+}
+.flow-task-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.flow-task-head .muted { font-size: 12.5px; }
+.flow-meta { flex-basis: 100%; font-size: 12px; color: var(--muted); }
+.flow-meta .overdue { color: var(--danger); font-weight: 600; }
+.flow-kind {
+  display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+}
+.flow-kind.kind-email { background: #e8f1fb; color: #1d4f86; border-color: #c7dbf2; }
+.flow-kind.kind-call { background: #e9f7ef; color: #166534; border-color: #c4e8d1; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .flow-kind.kind-email { background: #172a40; color: #9cc4f0; border-color: #284766; }
+  :root:not([data-theme="light"]) .flow-kind.kind-call { background: #14301f; color: #8fd9a8; border-color: #23523a; }
+}
+.flow-task input, .flow-task textarea, .flow-task select, .flow-editor textarea, .flow-editor select, .flow-enroll select {
+  width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); color: var(--text); font: inherit; font-size: 13px;
+}
+.flow-task textarea, .flow-editor textarea { resize: vertical; line-height: 1.45; }
+.flow-to { font-size: 12.5px; }
+.flow-script {
+  white-space: pre-wrap; font-size: 13px; padding: 8px 10px; border-radius: 8px;
+  background: var(--surface-2); border-left: 3px solid var(--accent);
+}
+.flow-list li { cursor: pointer; }
+.flow-list { margin-top: 10px; }
+.flow-title { font-size: 17px; text-transform: none; letter-spacing: 0; color: var(--text); margin: 8px 0 2px; }
+.flow-steps { margin: 8px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.flow-step-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.flow-step-edit {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 10px;
+}
+.flow-step-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.flow-step-row select { width: auto; }
+.flow-wait { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.rep-form .flow-wait input { width: 56px; padding: 5px 6px; }
+.flow-step-btns { margin-left: auto; display: inline-flex; gap: 2px; }
+.flow-exits { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.flow-exits legend { font-size: 12.5px; font-weight: 650; padding: 0 4px; }
+.flow-editor code { font-size: 11.5px; background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
+.flow-enroll { display: flex; align-items: center; gap: 6px; margin: 8px 16px 0; }
+.flow-enroll select { flex: 1; min-width: 0; }
+.flow-bulk { margin: 6px 0 0; font-size: 12.5px; font-weight: 600; }
+.flow-bulk span { white-space: nowrap; }
+.flow-on-card { margin: 8px 16px 0; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; }

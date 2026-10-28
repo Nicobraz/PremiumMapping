@@ -58,6 +58,15 @@ Wingmate leads flow in automatically as companies, with their contacts as people
 - **Editing synced records:** synced companies, people and notes follow the same rules as everything else (the owning rep or an admin edits; anyone can tag or add notes). If someone deletes a synced company, person or note here, the sync won't bring it back.
 - **Syncing while asleep:** the free server sleeps after 15 idle minutes. To keep syncing around the clock, add the link under *Sync even when nobody has the site open* to a free scheduler such as cron-job.org, every 15 minutes.
 
+## Outbound flows (admins)
+
+Apollo-style sequences, for admins only for now. **Flows** in the top bar (or *More → Outbound flows* on a phone).
+
+- **Build a flow:** *Flows → + New flow*. Add **Email**, **Call** and **Task** steps, each with a wait in days (the first step counts from when a contact is added, later ones from when the step before was done). Emails and call scripts can use fill-ins: `{{first_name}}`, `{{last_name}}`, `{{name}}`, `{{company}}`, `{{title}}`, `{{city}}`, `{{sender}}`. Optionally pick stages that take contacts out automatically (e.g. *Meeting Set*).
+- **Add contacts:** **Add to flow** on a contact's card, or filter the **Contacts** list and use *Add N contacts to …* at the top. Contacts already in the flow or already at an exit stage are skipped.
+- **Work it:** *To do* lists every step due today or overdue. Email steps come written; edit if you like, then **Open in email app** / **Open in Gmail** (or **Copy text**), send it yourself, and click **Mark sent**. Calls have a call button, the script and an outcome to log. Nothing is sent from PSS Connect.
+- Every step done is saved as a note on the contact's card. **Replied** or **Meeting booked** takes the contact out of the flow; so does **Remove**, the last step, or their stage (synced from Wingmate) reaching an exit stage. **Put back** on the flow page restarts them where they left off.
+
 ## Ask AI (built-in assistant)
 
 The **✦ Ask AI** tab on the right edge (on phones: More → Ask AI) opens Claude or ChatGPT in

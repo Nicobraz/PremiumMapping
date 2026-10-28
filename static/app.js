@@ -51,6 +51,11 @@ const state = {
   moveFor: null,          // contact whose "change company" box is open
   addExistingFor: null,   // company whose "add existing contact" box is open
   addExistingQuery: '',
+  flows: null,          // admins: outbound flows and who's in them (/api/flows)
+  flowsTab: 'todo',     // 'todo', 'flows' or 'flow' (one flow, state.flowView)
+  flowView: null,
+  flowEdit: null,       // the flow being built or edited
+  enrollFor: null,      // contact whose "add to flow" box is open
   dirFilters: [],       // [{ field, value }] in the Contacts list
   stageFilter: '',
   view: storeGet('pss.view') || 'team',  // 'team', 'mine' or (admins) a rep's name
@@ -1348,6 +1353,7 @@ function actionsHtml(n) {
   btns.push(`<button class="btn btn-sm" data-act="color" title="Change this card's color (everyone sees it)"><span class="swatch-dot" style="background:${nodeColor(n)}"></span>Color</button>`);
   if (canEditNode(n)) btns.push('<button class="btn btn-sm" data-act="edit">Edit</button>');
   if (canEditNode(n) && n.type === 'person') btns.push('<button class="btn btn-sm" data-act="merge" title="Fold a duplicate of this contact into it">Merge…</button>');
+  if (state.isAdmin && n.type === 'person') btns.push('<button class="btn btn-sm" data-flow-act="enroll-card" title="Add this contact to an outbound flow">Add to flow</button>');
   if (onMap(n.id) && (state.me || state.isAdmin)) btns.push(`<button class="btn btn-sm btn-ghost" data-act="off-map" title="Keep it in PSS Connect and searchable, but don't draw it${n.type === 'company' ? ' (or its contacts)' : ''}">Take off map</button>`);
   const offMap = onMap(n.id) ? ''
     : `<div class="off-map-note">Not on the map${n.stage ? ` (stage: ${esc(n.stage)})` : ''}. It's saved and searchable; put it on the map to see it there.</div>`;
@@ -1363,7 +1369,7 @@ function actionsHtml(n) {
   } else if (state.me && !canEditNode(n) && n.owner_rep !== myName()) {
     btns.push('<button class="btn btn-sm" data-act="request-transfer" title="Ask the owner (or an admin) to give you this lead">Request transfer</button>');
   }
-  return `${offMap}<div class="card-actions">${btns.join('')}</div>${picker}${transferBannerHtml(n)}${viewOnly}`;
+  return `${offMap}<div class="card-actions">${btns.join('')}</div>${cardFlowsHtml(n)}${picker}${transferBannerHtml(n)}${viewOnly}`;
 }
 
 // Anyone can add or remove a company's tags (not just its owner); new tags
@@ -2132,7 +2138,7 @@ function renderDirectoryList() {
     + (state.dirFilters.length > 1 ? '<button type="button" class="link-btn" data-dir-clear>Clear all</button>' : '');
   const items = dirItems().filter(dirMatches).sort(byName);
   const kind = state.dirTab === 'companies' ? ['company', 'companies'] : ['contact', 'contacts'];
-  const countLine = `<li class="dir-count muted">${plural(items.length, kind[0], kind[1])}${state.dirFilters.length ? ' match' : ''}</li>`;
+  const countLine = `<li class="dir-count muted">${plural(items.length, kind[0], kind[1])}${state.dirFilters.length ? ' match' : ''}${bulkFlowHtml(items.length)}</li>`;
   if (state.dirTab === 'companies') {
     list.innerHTML = countLine + (items.length ? items.map((c) => {
       const detail = [plural(peopleAt(c.id).length, 'contact', 'contacts'), c.location, c.owner_rep].filter(Boolean).join(' · ');
@@ -2165,6 +2171,7 @@ function refreshPanelAfterSync() {
   if (p.kind === 'directory') { renderDirectoryList(); return; }
   if (p.kind === 'merge') { if (state.nodes.has(p.id)) renderMergeList(); else closePanel(); return; }
   if (p.kind === 'requests') { openRequestsPanel(true); return; }
+  if (p.kind === 'flows') { if (!state.panelDirty && !panel.querySelector('.flow-task :focus')) renderFlowsPanel(); return; }
   if (state.panelDirty) return;
   if (p.kind === 'admin') rerenderAdmin();
   else if (p.kind === 'node') rerenderCard();
@@ -2412,7 +2419,9 @@ panel.addEventListener('submit', async (evt) => {
   const p = state.panel;
   if (submit) submit.disabled = true;  // the tag box submits on Enter and has no button
   try {
-    if (form.dataset.form === 'move-company') {
+    if (form.dataset.form.startsWith('flow-')) {
+      await submitFlowForm(form, data);
+    } else if (form.dataset.form === 'move-company') {
       const n = state.nodes.get(p.id);
       const typed = data.company.trim();
       const match = companyByName(typed);
@@ -2880,6 +2889,8 @@ $('#admin-login').addEventListener('submit', async (evt) => {
 function setAdmin(on) {
   if (state.isAdmin === !!on) return;
   state.isAdmin = !!on;
+  renderFlowsBadge();
+  if (on) loadFlows();
   if (state.panel?.kind === 'node-edit' && !state.panelDirty) openEditPanel(state.panel.id);
 }
 
@@ -3158,6 +3169,7 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
     signout: () => click('#me-chip'),
     ai: () => setAiOpen(true),
     'wm-sync': () => refreshWingmate(),
+    flows: () => openFlowsPanel(),
   })[action]?.();
   if (action !== 'filter' && action !== 'activity') syncNav();
 }));
@@ -3572,4 +3584,391 @@ aiLog.addEventListener('click', async (evt) => {
 buildLegend();
 loadMe();
 
+
+// ---------- outbound flows (admins) ----------
+// Apollo-style sequences: a flow is a list of email / call / task steps with waits in days.
+// Due steps show up under "To do" with the email already written; nothing is sent from here.
+
+const FLOW_KINDS = { email: 'Email', call: 'Call', task: 'Task' };
+const FLOW_FIELDS = ['first_name', 'last_name', 'name', 'company', 'title', 'city', 'sender'];
+const FLOW_STATUS = { active: 'In the flow', replied: 'Replied', meeting: 'Meeting booked', stopped: 'Removed', finished: 'Finished', exited: 'Stage reached' };
+
+function flowById(id) { return state.flows?.flows.find((f) => f.id === id) || null; }
+
+function dueTasks() {
+  if (!state.flows) return [];
+  return state.flows.enrollments
+    .filter((e) => e.status === 'active' && e.due_on && e.due_on <= state.flows.today && state.nodes.has(e.node_id) && flowById(e.flow_id))
+    .sort((a, b) => a.due_on.localeCompare(b.due_on) || a.id - b.id);
+}
+
+async function loadFlows() {
+  if (!state.isAdmin) return;
+  try {
+    state.flows = await api('GET', '/api/flows');
+  } catch { return; }
+  renderFlowsBadge();
+  if (state.panel?.kind === 'flows' && !state.panelDirty) renderFlowsPanel();
+}
+
+function renderFlowsBadge() {
+  const n = state.isAdmin ? dueTasks().length : 0;
+  $('#btn-flows').hidden = !state.isAdmin;
+  $('[data-sheet="flows"]').hidden = !state.isAdmin;
+  for (const el of [$('#flows-count'), $('#sheet-flows-count')]) {
+    el.textContent = n;
+    el.hidden = !n;
+  }
+}
+
+function fillTemplate(text, n) {
+  const company = companyOf(n);
+  const parts = n.name.trim().split(/\s+/);
+  const values = {
+    first_name: parts[0] || '', last_name: parts.length > 1 ? parts[parts.length - 1] : '', name: n.name,
+    company: company?.name || '', title: n.title || '', city: cityOf(n) || (company ? cityOf(company) : ''), sender: myName() || '',
+  };
+  return String(text || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (m, key) => (key in values ? values[key] : m));
+}
+
+function dueLabel(due) {
+  const today = state.flows.today;
+  if (due === today) return 'Due today';
+  const days = Math.round((Date.parse(`${today}T12:00:00`) - Date.parse(`${due}T12:00:00`)) / 86400000);
+  return days > 0 ? `${plural(days, 'day', 'days')} overdue` : `Due ${due}`;
+}
+
+function openFlowsPanel(tab) {
+  state.flowsTab = tab || 'todo';
+  state.flowEdit = null;
+  showPanel({ kind: 'flows' }, '<div id="flows-body"></div>');
+  renderFlowsPanel();
+  loadFlows();
+}
+
+function renderFlowsPanel() {
+  const body = $('#flows-body');
+  if (!body) return;
+  if (!state.flowEdit) state.panelDirty = false;  // half-typed task notes are dropped on purpose here
+  const f = state.flows;
+  const due = f ? dueTasks() : [];
+  const tab = state.flowsTab || 'todo';
+  let content;
+  if (!f) content = '<p class="muted section">Loading…</p>';
+  else if (state.flowEdit) content = flowEditorHtml(state.flowEdit);
+  else if (tab === 'flow' && flowById(state.flowView)) content = flowDetailHtml(flowById(state.flowView));
+  else if (tab === 'flows' || tab === 'flow') content = flowListHtml();
+  else content = due.length ? `<ul class="flow-tasks">${due.map(taskHtml).join('')}</ul>`
+    : `<p class="muted section">Nothing due. ${f.flows.length ? 'Steps show up here on the day they come due.' : 'Create a flow in the Flows tab, then add contacts to it.'}</p>`;
+  const scroll = panel.scrollTop;
+  body.innerHTML = `<div class="panel-head">
+      <h2>Outbound flows <span class="pill pill-company">Admin</span></h2>
+      <button class="icon-btn" data-act="close" aria-label="Close">×</button>
+    </div>
+    <div class="dir-controls"><div class="tabs-seg" role="tablist">
+      <button type="button" role="tab" class="${tab === 'todo' ? 'on' : ''}" aria-selected="${tab === 'todo'}" data-flow-tab="todo">To do${due.length ? ` (${due.length})` : ''}</button>
+      <button type="button" role="tab" class="${tab !== 'todo' ? 'on' : ''}" aria-selected="${tab !== 'todo'}" data-flow-tab="flows">Flows${f ? ` (${f.flows.length})` : ''}</button>
+    </div></div>
+    ${content}`;
+  panel.scrollTop = scroll;
+}
+
+function taskHtml(e) {
+  const n = state.nodes.get(e.node_id);
+  const flow = flowById(e.flow_id);
+  const step = flow.steps[Math.min(e.step_index, flow.steps.length - 1)];
+  const company = companyOf(n);
+  const head = `<div class="flow-task-head">
+      <span class="flow-kind kind-${step.kind}">${FLOW_KINDS[step.kind]}</span>
+      <b data-goto="${n.id}" class="request-lead">${esc(n.name)}</b>${stageBadge(n)}
+      <span class="muted">${esc([n.title, company?.name].filter(Boolean).join(' · '))}</span>
+      <span class="flow-meta">${esc(flow.name)} · step ${e.step_index + 1} of ${flow.steps.length} · <span class="${e.due_on < state.flows.today ? 'overdue' : ''}">${esc(dueLabel(e.due_on))}</span></span>
+    </div>`;
+  let work = '';
+  let doneLabel = 'Done ✓';
+  if (step.kind === 'email') {
+    doneLabel = 'Mark sent ✓';
+    work = `${n.email ? `<div class="flow-to">To: <b>${esc(n.email)}</b></div>` : '<div class="flow-to error-text">No email on this contact. Add one, or skip this step.</div>'}
+      <input class="flow-subject" value="${esc(fillTemplate(step.subject, n))}" aria-label="Subject" placeholder="Subject">
+      <textarea class="flow-body" rows="7" aria-label="Email text">${esc(fillTemplate(step.body, n))}</textarea>
+      <div class="row-btns">
+        <button type="button" class="btn btn-sm" data-flow-act="mailto" ${n.email ? '' : 'disabled'}>Open in email app</button>
+        <button type="button" class="btn btn-sm" data-flow-act="gmail" ${n.email ? '' : 'disabled'}>Open in Gmail</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-flow-act="copy">Copy text</button>
+      </div>`;
+  } else if (step.kind === 'call') {
+    doneLabel = 'Log call ✓';
+    work = `${n.phone ? `<a class="btn btn-sm" href="tel:${esc(n.phone.replace(/[^\d+]/g, ''))}">📞 Call ${esc(n.phone)}</a>` : '<div class="flow-to error-text">No phone number on this contact.</div>'}
+      ${step.body ? `<div class="flow-script">${esc(fillTemplate(step.body, n))}</div>` : ''}
+      <select class="flow-outcome" aria-label="How did it go?">${state.flows.outcomes.map((o) => `<option>${esc(o)}</option>`).join('')}</select>`;
+  } else {
+    work = step.body ? `<div class="flow-script">${esc(fillTemplate(step.body, n))}</div>` : '';
+  }
+  return `<li class="flow-task" data-enrollment="${e.id}">${head}${work}
+    <input class="flow-note" placeholder="Note for the contact's card (optional)" aria-label="Note">
+    <div class="row-btns">
+      <button type="button" class="btn btn-sm btn-primary" data-flow-act="done">${doneLabel}</button>
+      <button type="button" class="btn btn-sm" data-flow-act="replied">Replied</button>
+      <button type="button" class="btn btn-sm" data-flow-act="meeting">Meeting booked</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-flow-act="skip">Skip step</button>
+      <button type="button" class="btn btn-sm btn-danger-ghost" data-flow-act="stop">Remove</button>
+    </div></li>`;
+}
+
+function flowCounts(flowId) {
+  const counts = {};
+  for (const e of state.flows.enrollments) if (e.flow_id === flowId) counts[e.status] = (counts[e.status] || 0) + 1;
+  return counts;
+}
+
+function flowListHtml() {
+  const rows = state.flows.flows.map((f) => {
+    const c = flowCounts(f.id);
+    const detail = [plural(f.steps.length, 'step', 'steps'), `${c.active || 0} active`,
+      c.replied ? `${c.replied} replied` : '', c.meeting ? plural(c.meeting, 'meeting', 'meetings') : ''].filter(Boolean).join(' · ');
+    return `<li data-flow-open="${f.id}"><span class="who"><b>${esc(f.name)}</b><span>${esc(detail)}</span></span><span class="muted">›</span></li>`;
+  }).join('');
+  return `<div class="section">
+      <button type="button" class="btn btn-sm btn-primary" data-flow-act="new">+ New flow</button>
+      ${rows ? `<ul class="conn-list flow-list">${rows}</ul>` : '<p class="muted">No flows yet. A flow is a series of emails, calls and tasks spaced out over days, like an Apollo sequence.</p>'}
+      <p class="muted">Add contacts from a contact's card (<b>Add to flow</b>) or in bulk from the <b>Contacts</b> list.</p>
+    </div>`;
+}
+
+function stepSummary(s, i) {
+  const wait = i === 0 ? (s.wait_days ? `${plural(s.wait_days, 'day', 'days')} after adding` : 'Right away') : `+${plural(s.wait_days, 'day', 'days')}`;
+  const text = s.kind === 'email' ? s.subject || s.body : s.body;
+  return `<li><span class="flow-kind kind-${s.kind}">${FLOW_KINDS[s.kind]}</span> <span class="muted">${esc(wait)}</span>${text ? ` · ${esc(text.slice(0, 70))}` : ''}</li>`;
+}
+
+function flowDetailHtml(f) {
+  const people = state.flows.enrollments.filter((e) => e.flow_id === f.id && state.nodes.has(e.node_id))
+    .sort((a, b) => (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1) || (a.due_on || '').localeCompare(b.due_on || ''));
+  const c = flowCounts(f.id);
+  const enrolled = people.map((e) => {
+    const n = state.nodes.get(e.node_id);
+    const status = e.status === 'active'
+      ? `Step ${e.step_index + 1} of ${f.steps.length} · ${dueLabel(e.due_on)}`
+      : e.ended_reason || FLOW_STATUS[e.status];
+    return `<li><span class="who"><b data-goto="${n.id}" class="request-lead">${esc(n.name)}</b>${stageBadge(n)}<span>${esc([companyOf(n)?.name, status].filter(Boolean).join(' · '))}</span></span>
+      <button type="button" class="link-btn" data-flow-act="${e.status === 'active' ? 'stop' : 'resume'}" data-enrollment="${e.id}">${e.status === 'active' ? 'Remove' : 'Put back'}</button></li>`;
+  }).join('');
+  return `<div class="section">
+      <button type="button" class="link-btn" data-flow-tab="flows">‹ All flows</button>
+      <h3 class="flow-title">${esc(f.name)}</h3>
+      <p class="muted">${[`${c.active || 0} active`, c.replied ? `${c.replied} replied` : '', c.meeting ? plural(c.meeting, 'meeting booked', 'meetings booked') : '', c.finished ? `${c.finished} finished` : ''].filter(Boolean).join(' · ')}</p>
+      <ol class="flow-steps">${f.steps.map(stepSummary).join('')}</ol>
+      ${f.exit_stages.length ? `<p class="muted">Contacts leave automatically at: ${f.exit_stages.map((s) => `<span class="stage-chip">${esc(s)}</span>`).join(' ')}</p>` : ''}
+      <div class="row-btns">
+        <button type="button" class="btn btn-sm" data-flow-act="edit">Edit flow</button>
+        <button type="button" class="btn btn-sm btn-danger-ghost" data-flow-act="delete">Delete flow</button>
+      </div>
+    </div>
+    <div class="section">
+      <h3>Contacts <span>${people.length}</span></h3>
+      ${enrolled ? `<ul class="conn-list">${enrolled}</ul>` : '<p class="muted">No one yet. Use <b>Add to flow</b> on a contact\'s card, or add a filtered list from <b>Contacts</b>.</p>'}
+    </div>`;
+}
+
+function knownStages() {
+  const stages = new Map();
+  for (const n of state.nodes.values()) {
+    const s = n.type === 'person' ? n.stage.trim() : '';
+    if (s) stages.set(s.toLowerCase(), s);
+  }
+  return [...stages.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function flowEditorHtml(d) {
+  const stages = [...new Set([...knownStages(), ...d.exit_stages])];
+  const steps = d.steps.map((s, i) => `<li class="flow-step-edit" data-step="${i}">
+      <div class="flow-step-row">
+        <b>${i + 1}.</b>
+        <select name="kind" aria-label="Step type">${Object.entries(FLOW_KINDS).map(([k, label]) => `<option value="${k}" ${s.kind === k ? 'selected' : ''}>${label}</option>`).join('')}</select>
+        <label class="flow-wait">wait <input name="wait_days" type="number" min="0" max="365" value="${s.wait_days}" aria-label="Days to wait"> ${i === 0 ? 'days after adding' : 'days after the last step'}</label>
+        <span class="flow-step-btns">
+          <button type="button" class="icon-btn icon-sm" data-step-act="up" ${i ? '' : 'disabled'} aria-label="Move up">↑</button>
+          <button type="button" class="icon-btn icon-sm" data-step-act="down" ${i < d.steps.length - 1 ? '' : 'disabled'} aria-label="Move down">↓</button>
+          <button type="button" class="icon-btn icon-sm" data-step-act="remove" aria-label="Remove step">×</button>
+        </span>
+      </div>
+      ${s.kind === 'email' ? `<input name="subject" value="${esc(s.subject)}" placeholder="Subject, e.g. Quick question, {{first_name}}" aria-label="Subject">` : ''}
+      <textarea name="body" rows="${s.kind === 'email' ? 6 : 3}" placeholder="${s.kind === 'email' ? 'Hi {{first_name}},…' : s.kind === 'call' ? 'Call script or talking points (optional)' : 'What to do, e.g. Connect on LinkedIn'}" aria-label="Step text">${esc(s.body)}</textarea>
+    </li>`).join('');
+  return `<form class="section rep-form flow-editor" data-form="flow-edit">
+      <button type="button" class="link-btn" data-flow-act="cancel-edit">‹ Cancel</button>
+      <input name="name" required maxlength="120" value="${esc(d.name)}" placeholder="Flow name, e.g. New HOA outreach" aria-label="Flow name">
+      <ol class="flow-step-list">${steps}</ol>
+      <div class="row-btns">
+        ${Object.entries(FLOW_KINDS).map(([k, label]) => `<button type="button" class="btn btn-sm" data-step-add="${k}">+ ${label}</button>`).join('')}
+      </div>
+      <p class="muted">Fill-ins: ${FLOW_FIELDS.map((x) => `<code>{{${x}}}</code>`).join(' ')}. <code>{{sender}}</code> is the name of whoever sends it.</p>
+      <fieldset class="flow-exits"><legend>Take contacts out when their stage becomes</legend>
+        ${stages.length ? stages.map((s) => `<label class="check"><input type="checkbox" name="exit_stage" value="${esc(s)}" ${d.exit_stages.includes(s) ? 'checked' : ''}> ${esc(s)}</label>`).join('')
+          : '<p class="muted">No stages yet. They come from Wingmate.</p>'}
+        <p class="muted">Marking a contact <b>Replied</b> or <b>Meeting booked</b> always takes them out.</p>
+      </fieldset>
+      <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">${d.id ? 'Save flow' : 'Create flow'}</button></div>
+    </form>`;
+}
+
+// Reads the open editor back into state.flowEdit (before adding, moving or removing steps).
+function readFlowEditor() {
+  const form = panel.querySelector('[data-form="flow-edit"]');
+  const d = state.flowEdit;
+  if (!form || !d) return d;
+  d.name = form.elements.name.value;
+  d.exit_stages = [...form.querySelectorAll('[name="exit_stage"]:checked')].map((x) => x.value);
+  form.querySelectorAll('.flow-step-edit').forEach((li) => {
+    const s = d.steps[Number(li.dataset.step)];
+    s.kind = li.querySelector('[name="kind"]').value;
+    s.wait_days = Number(li.querySelector('[name="wait_days"]').value) || 0;
+    s.subject = li.querySelector('[name="subject"]')?.value ?? s.subject ?? '';
+    s.body = li.querySelector('[name="body"]').value;
+  });
+  return d;
+}
+
+async function flowCall(method, path, body, message) {
+  try {
+    const r = await api(method, path, body);
+    state.flows = r;
+    renderFlowsBadge();
+    if (message) toast(typeof message === 'function' ? message(r) : message);
+    return r;
+  } catch (err) {
+    toast(err.message, true);
+    return null;
+  }
+}
+
+function enrollMessage(r) {
+  const parts = [`Added ${plural(r.added, 'contact', 'contacts')}`];
+  if (r.already) parts.push(`${r.already} already in it`);
+  if (r.at_exit) parts.push(`${r.at_exit} already at an exit stage`);
+  return parts.join(' · ');
+}
+
+panel.addEventListener('click', async (evt) => {
+  const tabBtn = evt.target.closest('[data-flow-tab]');
+  if (tabBtn) { state.flowsTab = tabBtn.dataset.flowTab; state.flowEdit = null; renderFlowsPanel(); loadFlows(); return; }
+  const open = evt.target.closest('[data-flow-open]');
+  if (open) { state.flowsTab = 'flow'; state.flowView = Number(open.dataset.flowOpen); renderFlowsPanel(); panel.scrollTop = 0; loadFlows(); return; }
+  const stepAdd = evt.target.closest('[data-step-add]');
+  if (stepAdd) {
+    const d = readFlowEditor();
+    d.steps.push({ kind: stepAdd.dataset.stepAdd, wait_days: d.steps.length ? 3 : 0, subject: '', body: '' });
+    state.panelDirty = true;
+    renderFlowsPanel();
+    return;
+  }
+  const stepAct = evt.target.closest('[data-step-act]');
+  if (stepAct) {
+    const d = readFlowEditor();
+    const i = Number(stepAct.closest('[data-step]').dataset.step);
+    const j = stepAct.dataset.stepAct === 'up' ? i - 1 : i + 1;
+    if (stepAct.dataset.stepAct === 'remove') d.steps.splice(i, 1);
+    else [d.steps[i], d.steps[j]] = [d.steps[j], d.steps[i]];
+    state.panelDirty = true;
+    renderFlowsPanel();
+    return;
+  }
+  const btn = evt.target.closest('[data-flow-act]');
+  if (!btn) return;
+  const act = btn.dataset.flowAct;
+  const flow = flowById(state.flowView);
+  if (act === 'new') {
+    state.flowEdit = { name: '', exit_stages: [], steps: [{ kind: 'email', wait_days: 0, subject: '', body: '' }] };
+    renderFlowsPanel();
+  } else if (act === 'edit' && flow) {
+    state.flowEdit = JSON.parse(JSON.stringify(flow));
+    renderFlowsPanel();
+  } else if (act === 'cancel-edit') {
+    state.flowEdit = null;
+    state.panelDirty = false;
+    renderFlowsPanel();
+  } else if (act === 'delete' && flow) {
+    if (!confirm(`Delete the flow “${flow.name}”? Its contacts are taken out of it. Notes already on their cards stay.`)) return;
+    if (await flowCall('DELETE', `/api/flows/${flow.id}`, null, 'Flow deleted')) { state.flowsTab = 'flows'; renderFlowsPanel(); }
+  } else if (act === 'enroll-card' || act === 'cancel-enroll') {
+    state.enrollFor = act === 'enroll-card' && state.enrollFor !== state.panel?.id ? state.panel.id : null;
+    if (state.enrollFor && !state.flows) await loadFlows();
+    rerenderCard();
+  } else {
+    const item = btn.closest('[data-enrollment]');
+    const id = Number(btn.dataset.enrollment || item?.dataset.enrollment);
+    const subject = item?.querySelector('.flow-subject')?.value || '';
+    const text = item?.querySelector('.flow-body')?.value || '';
+    const e = state.flows?.enrollments.find((x) => x.id === id);
+    const n = e && state.nodes.get(e.node_id);
+    if (act === 'mailto') {
+      window.location.href = `mailto:${encodeURIComponent(n.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`;
+    } else if (act === 'gmail') {
+      window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(n.email)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`, '_blank', 'noopener');
+    } else if (act === 'copy') {
+      try { await navigator.clipboard.writeText(subject ? `${subject}\n\n${text}` : text); toast('Copied'); } catch { toast('Couldn’t copy. Select the text instead.', true); }
+    } else if (['done', 'skip', 'replied', 'meeting', 'stop', 'resume'].includes(act)) {
+      if (act === 'stop' && !confirm(`Take ${n.name} out of this flow?`)) return;
+      const body = { action: act, note: item?.querySelector('.flow-note')?.value || '', outcome: item?.querySelector('.flow-outcome')?.value || '', subject };
+      const done = { done: 'Done. Next step scheduled', skip: 'Skipped', replied: `${n.name} marked replied`, meeting: `Meeting booked with ${n.name} 🎉`, stop: `${n.name} removed from the flow`, resume: `${n.name} is back in the flow` }[act];
+      if (await flowCall('POST', `/api/flows/enrollments/${id}`, body, done)) {
+        renderFlowsPanel();
+        if (['done', 'replied', 'meeting'].includes(act)) sync();  // the note on their card
+      }
+    }
+  }
+});
+
+async function submitFlowForm(form, data) {
+  if (form.dataset.form === 'flow-edit') {
+    const d = readFlowEditor();
+    const body = { name: d.name, exit_stages: d.exit_stages, steps: d.steps };
+    const r = d.id ? await flowCall('PUT', `/api/flows/${d.id}`, body, 'Flow saved') : await flowCall('POST', '/api/flows', body, 'Flow created');
+    if (!r) return;
+    state.flowEdit = null;
+    state.panelDirty = false;
+    state.flowsTab = 'flow';
+    state.flowView = d.id || r.id;
+    renderFlowsPanel();
+  } else if (form.dataset.form === 'flow-enroll') {
+    const r = await flowCall('POST', `/api/flows/${data.flow_id}/enroll`, { node_ids: [state.panel.id] }, enrollMessage);
+    if (r) { state.enrollFor = null; rerenderCard(); }
+  } else if (form.dataset.form === 'flow-bulk') {
+    const ids = dirItems().filter(dirMatches).map((n) => n.id);
+    const flow = flowById(Number(data.flow_id));
+    if (!flow || !confirm(`Add ${plural(ids.length, 'contact', 'contacts')} to “${flow.name}”?`)) return;
+    await flowCall('POST', `/api/flows/${flow.id}/enroll`, { node_ids: ids }, enrollMessage);
+  }
+}
+
+// On a contact's card (admins): which flows they're in, and "Add to flow".
+function cardFlowsHtml(n) {
+  if (!state.isAdmin || n.type !== 'person' || !state.flows) return '';
+  const mine = state.flows.enrollments.filter((e) => e.node_id === n.id && flowById(e.flow_id));
+  const lines = mine.filter((e) => e.status === 'active').map((e) => {
+    const f = flowById(e.flow_id);
+    return `<div class="flow-on-card">In flow <b>${esc(f.name)}</b> · step ${e.step_index + 1} of ${f.steps.length} · ${esc(dueLabel(e.due_on))}</div>`;
+  }).join('');
+  const box = state.enrollFor === n.id ? (state.flows.flows.length
+    ? `<form class="flow-enroll" data-form="flow-enroll">
+        <select name="flow_id" aria-label="Flow">${state.flows.flows.map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select>
+        <button type="submit" class="btn btn-sm btn-primary">Add</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-flow-act="cancel-enroll">Cancel</button>
+      </form>`
+    : '<p class="muted flow-enroll">No flows yet. Create one under <b>Flows</b> first.</p>') : '';
+  return lines + box;
+}
+
+function bulkFlowHtml(count) {
+  if (!state.isAdmin || state.dirTab === 'companies' || !state.flows?.flows.length || !count) return '';
+  return `<form class="flow-enroll flow-bulk" data-form="flow-bulk">
+      <span>Add ${plural(count, 'contact', 'contacts')} to</span>
+      <select name="flow_id" aria-label="Flow">${state.flows.flows.map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select>
+      <button type="submit" class="btn btn-sm">Add</button>
+    </form>`;
+}
+
+$('#btn-flows').addEventListener('click', () => {
+  if (state.panel?.kind === 'flows') closePanel(); else openFlowsPanel();
+});
 })();

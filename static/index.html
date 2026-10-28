@@ -56,6 +56,7 @@
       </div>
     </div>
     <button id="btn-directory" class="btn btn-ghost" title="Everyone's contacts, with filters">Contacts</button>
+    <button id="btn-flows" class="btn btn-ghost" title="Outbound flows (admins)" hidden>Flows <span id="flows-count" class="count-badge" hidden></span></button>
     <button id="btn-requests" class="btn btn-ghost" title="Lead transfer requests" hidden>Requests <span id="requests-count" class="count-badge"></span></button>
     <button id="btn-wm-sync" class="btn btn-ghost" title="Bring in what's new in Wingmate now" hidden><span class="wm-icon" aria-hidden="true">↻</span> Wingmate</button>
     <button id="btn-activity" class="btn btn-ghost" title="Recent changes">Activity</button>
@@ -273,6 +274,7 @@
 <div id="sheet-more" class="sheet" role="menu" hidden>
   <button type="button" class="sheet-item" data-sheet="ai">✦ Ask AI</button>
   <button type="button" class="sheet-item" data-sheet="wm-sync" hidden>↻ Sync with Wingmate</button>
+  <button type="button" class="sheet-item" data-sheet="flows" hidden>Outbound flows <span id="sheet-flows-count" class="count-badge" hidden></span></button>
   <button type="button" class="sheet-item" data-sheet="filter">Filter the map</button>
   <button type="button" class="sheet-item" data-sheet="requests">Transfer requests <span id="sheet-requests-count" class="count-badge" hidden></span></button>
   <button type="button" class="sheet-item" data-sheet="activity">Activity</button>

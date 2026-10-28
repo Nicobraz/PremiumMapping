@@ -30,6 +30,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import assistant
 import connector
+import flows
 import wingmate
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -270,7 +271,7 @@ class Database:
 
 
 def schema_statements():
-    sql = SCHEMA
+    sql = SCHEMA + flows.SCHEMA
     if USE_POSTGRES:
         sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
         sql = sql.replace(" REAL,", " DOUBLE PRECISION,")
@@ -2157,6 +2158,7 @@ def wingmate_refresh():
 app.secret_key = os.environ.get("SECRET_KEY") or init_db()
 connector.install(app, sys.modules[__name__])  # Claude / ChatGPT connector at /mcp
 assistant.install(app, sys.modules[__name__])  # the in-app "Ask AI" side panel
+flows.install(app, sys.modules[__name__])  # outbound flows (admins)
 
 # One background sync loop per server process (the app runs a single worker).
 _CLI_COMMANDS = ("add-admin", "set-admin-password")
