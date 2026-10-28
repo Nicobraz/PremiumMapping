@@ -523,8 +523,8 @@ function render() {
   $('#empty').hidden = state.mapIds.size > 0;
 }
 
-// New nodes (and CSV imports) arrive without coordinates: put people at the bottom of
-// their company's column and loose nodes in a grid beside the existing map.
+// New nodes (and CSV imports) arrive without coordinates: put people in the next free
+// spot under their company and loose nodes in a grid beside the existing map.
 function placeUnpositioned() {
   const all = mapNodes();
   const missing = all.filter((n) => !hasPos(n));
@@ -543,10 +543,13 @@ function placeUnpositioned() {
     const company = n.company_id != null ? state.nodes.get(n.company_id) : null;
     let pos;
     if (n.type === 'person' && hasPos(company)) {
-      // Below the lowest colleague already in the company's column.
-      const column = all.filter((o) => o !== n && o.company_id === company.id && hasPos(o) && Math.abs(o.x - company.x) < 60);
-      const lowest = column.reduce((y, o) => Math.max(y, o.y), company.y + ORG.firstGap - ORG.rowGap);
-      pos = { x: company.x, y: lowest + ORG.rowGap };
+      // In the first free spot of the company's rows of people.
+      const taken = all.filter((o) => o !== n && hasPos(o));
+      for (let i = 0; !pos; i += 1) {
+        const spot = { x: company.x + ((i % ORG.perRow) - (ORG.perRow - 1) / 2) * ORG.personGap,
+                       y: company.y + ORG.firstGap + Math.floor(i / ORG.perRow) * ORG.rowGap };
+        if (!taken.some((o) => Math.abs(o.x - spot.x) < 40 && Math.abs(o.y - spot.y) < 40)) pos = spot;
+      }
     } else {
       pos = { x: bb.x2 + 220 + (slot % cols) * 220, y: bb.y1 + Math.floor(slot / cols) * 220 };
       slot += 1;
@@ -559,13 +562,13 @@ function placeUnpositioned() {
   savePositions(updates);
 }
 
-// Org-chart layout: companies in rows across the top, each company's people in a
-// straight column beneath it (wrapping into extra columns for big companies), and
+// Org-chart layout: companies in rows across the top, each company's people beneath it
+// in rows of 5, and
 // contacts without a company in a block at the bottom. Most recently added or edited
 // comes first: companies left to right (a company counts as edited when any of its
-// people is), people top to bottom. Records that are connected are kept side by side,
+// people is), people left to right, row by row. Records that are connected are kept side by side,
 // so their lines are short and don't run through other dots.
-const ORG = { colWidth: 200, firstGap: 110, rowGap: 78, perColumn: 8, bandGap: 150 };
+const ORG = { colWidth: 200, personGap: 150, perRow: 5, firstGap: 110, rowGap: 78, bandGap: 150 };
 
 // Orders items newest first, but walks each group of connected items together so
 // every item sits next to one it's linked to.
@@ -648,20 +651,22 @@ function orgChartFor(plan, maxWidth) {
   let y = 0;
   let bandHeight = 0;
   for (const { company, staff } of plan.columns) {
-    const subCols = Math.max(1, Math.ceil(staff.length / ORG.perColumn));
-    const width = subCols * ORG.colWidth;
+    const across = Math.max(1, Math.min(staff.length, ORG.perRow));
+    const width = ORG.colWidth + (across - 1) * ORG.personGap;
     if (x > 0 && x + width > maxWidth) {  // start a new band of companies
       y += bandHeight + ORG.bandGap;
       x = 0;
       bandHeight = 0;
     }
-    const left = x + ORG.colWidth / 2;
-    pos[company.id] = { x: left + (width - ORG.colWidth) / 2, y };
+    const middle = x + width / 2;
+    pos[company.id] = { x: middle, y };
     staff.forEach((p, i) => {
-      pos[p.id] = { x: left + Math.floor(i / ORG.perColumn) * ORG.colWidth,
-                    y: y + ORG.firstGap + (i % ORG.perColumn) * ORG.rowGap };
+      const row = Math.floor(i / ORG.perRow);
+      const inRow = Math.min(ORG.perRow, staff.length - row * ORG.perRow);  // a short last row is centred too
+      pos[p.id] = { x: middle + ((i % ORG.perRow) - (inRow - 1) / 2) * ORG.personGap,
+                    y: y + ORG.firstGap + row * ORG.rowGap };
     });
-    const rows = Math.min(staff.length, ORG.perColumn);
+    const rows = Math.ceil(staff.length / ORG.perRow);
     bandHeight = Math.max(bandHeight, rows ? ORG.firstGap + (rows - 1) * ORG.rowGap : 0);
     x += width;
   }
