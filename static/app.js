@@ -3875,6 +3875,7 @@ function flowEditorHtml(d) {
           ${pipes.map((p) => `<option value="${esc(p.campaign_id)}" ${d.pipeline === p.campaign_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
           ${d.pipeline && !pipes.some((p) => p.campaign_id === d.pipeline) ? `<option value="${esc(d.pipeline)}" selected>${esc(pipe.name)}</option>` : ''}
         </select></label>
+      <p class="muted">Lists the ${plural(pipes.length, 'pipeline', 'pipelines')} connected in ⚙ → Wingmate. Wingmate gives each pipeline its own API token, so to see another one here, add it there under <b>+ Add another pipeline</b>.</p>
       ${pipe ? `<label>Start contacts who are at
           <select name="start_stage"><option value="">Any stage</option>
             ${[...new Set([...stages, ...(d.start_stage ? [d.start_stage] : [])])].map((st) => `<option value="${esc(st)}" ${d.start_stage === st ? 'selected' : ''}>${esc(st)}</option>`).join('')}
