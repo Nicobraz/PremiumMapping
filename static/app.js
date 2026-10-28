@@ -3613,7 +3613,7 @@ const FLOW_KINDS = { email: 'Email', call: 'Call', linkedin: 'LinkedIn', task: '
 const FLOW_TEMPLATE = [
   { kind: 'email', wait_days: 0, subject: '', body: '' },
   { kind: 'call', wait_days: 2, subject: '', body: '' },
-  { kind: 'email', wait_days: 2, subject: '', body: '' },
+  { kind: 'email', wait_days: 0, subject: '', body: '' },  // straight after the call
   { kind: 'linkedin', wait_days: 2, subject: '', body: 'Send a connection request' },
   { kind: 'call', wait_days: 3, subject: '', body: '' },
   { kind: 'email', wait_days: 3, subject: '', body: '' },
