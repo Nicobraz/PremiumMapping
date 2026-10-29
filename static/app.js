@@ -322,6 +322,24 @@ const lockDotsOnPhones = () => cy.autoungrabify(phoneQuery.matches);
 lockDotsOnPhones();
 phoneQuery.addEventListener?.('change', () => { lockDotsOnPhones(); cy.resize(); });
 
+// iPad Safari ignores user-scalable=no, so a pinch or double-tap can zoom the whole page,
+// which stretches the map's canvas and blurs it. Redraw the map at the zoomed scale, kept
+// under Safari's ~16M-pixel canvas limit.
+let mapPxRatio = 0, sharpenTimer = 0;
+function sharpenMap() {
+  const box = $('#cy').getBoundingClientRect();
+  const fit = Math.sqrt(16e6 / Math.max(1, box.width * box.height));
+  const ratio = Math.min(fit, 4, (window.devicePixelRatio || 1) * (window.visualViewport?.scale || 1));
+  if (Math.abs(ratio - mapPxRatio) < 0.05) return;
+  mapPxRatio = ratio;
+  cy.renderer().forcedPixelRatio = ratio;
+  cy.resize();
+}
+const sharpenSoon = () => { clearTimeout(sharpenTimer); sharpenTimer = setTimeout(sharpenMap, 150); };
+window.visualViewport?.addEventListener('resize', sharpenSoon);
+window.addEventListener('resize', sharpenSoon);
+sharpenMap();
+
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 darkQuery.addEventListener?.('change', () => cy.style(graphStyle()));
 
