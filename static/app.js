@@ -1406,36 +1406,20 @@ function actionsHtml(n) {
   return `${offMap}<div class="card-actions">${btns.join('')}</div>${cardFlowsHtml(n)}${picker}${transferBannerHtml(n)}${viewOnly}`;
 }
 
-// Anyone can add or remove a company's tags (not just its owner), picked from the
-// fixed list (state.tagList). Older tags stay until removed.
+// Anyone can add or remove a company's tags (not just its owner). Every tag on the fixed
+// list (state.tagList) shows as an on/off chip, so a company can have as many as fit;
+// older tags not on the list show with an × until removed.
 function tagEditorHtml(n) {
   const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
-  return `<div class="tags tag-editor">
-    ${tags.map((t) => `<span class="tag">${esc(t)}<button type="button" class="tag-x" data-untag="${esc(t)}" title="Remove tag" aria-label="Remove tag ${esc(t)}">×</button></span>`).join('')}
-    <form class="tag-add" data-form="add-tag"><input name="tag" maxlength="40" autocomplete="off" placeholder="+ Add tag" aria-label="Add a tag" aria-autocomplete="list"></form>
-    <div class="tag-suggest" role="listbox" aria-label="Tags" hidden></div>
+  const have = new Set(tags.map((t) => t.toLowerCase()));
+  const list = state.tagList || [];
+  const listed = new Set(list.map((t) => t.toLowerCase()));
+  return `<div class="tags tag-editor" role="group" aria-label="Tags">
+    ${list.map((t) => have.has(t.toLowerCase())
+      ? `<button type="button" class="tag-option on" data-untag="${esc(t)}" aria-pressed="true" title="Remove tag">✓ ${esc(t)}</button>`
+      : `<button type="button" class="tag-option" data-addtag="${esc(t)}" aria-pressed="false" title="Add tag">${esc(t)}</button>`).join('')}
+    ${tags.filter((t) => !listed.has(t.toLowerCase())).map((t) => `<span class="tag tag-old" title="Not on the tag list any more">${esc(t)}<button type="button" class="tag-x" data-untag="${esc(t)}" title="Remove tag" aria-label="Remove tag ${esc(t)}">×</button></span>`).join('')}
   </div>`;
-}
-
-// Clickable tag choices: the fixed list, minus tags the company already has.
-function tagSuggestions(company, query) {
-  const have = new Set(splitTags(company.tags));
-  const q = query.trim().toLowerCase();
-  return (state.tagList || []).filter((t) => !have.has(t.toLowerCase()) && (!q || t.toLowerCase().includes(q)));
-}
-
-function showTagSuggestions(input) {
-  const box = input.closest('.tag-editor')?.querySelector('.tag-suggest');
-  const company = state.panel?.kind === 'node' ? state.nodes.get(state.panel.id) : null;
-  if (!box || !company) return;
-  const items = tagSuggestions(company, input.value);
-  box.innerHTML = items.map((t) => `<button type="button" role="option" class="tag-option" data-addtag="${esc(t)}">${esc(t)}</button>`).join('')
-    || `<span class="muted">${input.value.trim() ? 'No tag by that name' : 'It has every tag'}</span>`;
-  box.hidden = false;
-}
-
-function hideTagSuggestions() {
-  panel.querySelectorAll('.tag-suggest').forEach((box) => { box.hidden = true; });
 }
 
 async function addTag(tag) {
@@ -1446,24 +1430,8 @@ async function addTag(tag) {
     state.panelDirty = false;
     await sync();
     rerenderCard();
-    const input = panel.querySelector('.tag-add input');
-    if (input) { input.focus(); showTagSuggestions(input); }  // ready for the next one
   } catch (err) { toast(err.message, true); }
 }
-
-panel.addEventListener('focusin', (evt) => {
-  if (evt.target.matches('.tag-add input')) showTagSuggestions(evt.target);
-});
-panel.addEventListener('focusout', (evt) => {
-  if (!evt.target.matches('.tag-add input')) return;
-  setTimeout(() => {
-    if (!panel.contains(document.activeElement) || !document.activeElement.closest('.tag-editor')) hideTagSuggestions();
-  }, 150);
-});
-// Keep focus in the box while a suggestion is pressed, so the click lands.
-panel.addEventListener('pointerdown', (evt) => {
-  if (evt.target.closest('[data-addtag]')) evt.preventDefault();
-});
 
 function tagChipsHtml(n) {
   if (n.type !== 'company') return '';
@@ -2207,7 +2175,6 @@ panel.addEventListener('input', (evt) => {
     renderDirectoryList();
     return;
   }
-  if (evt.target.matches('.tag-add input')) { showTagSuggestions(evt.target); return; }
   if (evt.target.id === 'merge-filter') { renderMergeList(); return; }
   if (evt.target.id === 'add-existing-q') {
     state.addExistingQuery = evt.target.value;
@@ -2231,11 +2198,6 @@ panel.addEventListener('change', (evt) => {
 
 // Cmd/Ctrl+Enter saves a note.
 panel.addEventListener('keydown', (evt) => {
-  if (evt.key === 'Escape' && evt.target.matches('.tag-add input') && panel.querySelector('.tag-suggest:not([hidden])')) {
-    evt.stopPropagation();  // close the suggestions, not the card
-    hideTagSuggestions();
-    return;
-  }
   if (evt.key === 'Enter' && (evt.metaKey || evt.ctrlKey) && evt.target.closest('[data-form="note"]')) {
     evt.preventDefault();
     evt.target.form.requestSubmit();
@@ -2476,9 +2438,6 @@ panel.addEventListener('submit', async (evt) => {
       state.panelDirty = false;
       renderWingmateSection();
       toast(`Connected to Wingmate${state.wingmate.campaign_name ? `: ${state.wingmate.campaign_name}` : ''}`);
-    } else if (form.dataset.form === 'add-tag') {
-      const match = tagSuggestions(state.nodes.get(state.panel.id), data.tag)[0];
-      if (match) await addTag(match);  // Enter picks the first match
     } else if (form.dataset.form === 'my-password') {
       if (data.new_password !== data.confirm) { toast('The two passwords don’t match', true); return; }
       await api('POST', '/api/me/password', { new_password: data.new_password });

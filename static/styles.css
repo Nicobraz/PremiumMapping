@@ -555,29 +555,21 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 /* ---------- company tag editor ---------- */
-.tag-editor { position: relative; align-items: center; }
-.tag-suggest {
-  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 8;
-  display: flex; flex-wrap: wrap; gap: 6px; padding: 10px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow);
-}
+.tag-editor { align-items: center; }
 .tag-option {
   display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
-  color: var(--text); font-size: 12.5px; font-weight: 600;
+  border: 1px dashed var(--border); border-radius: 999px; background: var(--surface);
+  color: var(--muted); font-size: 12px; font-weight: 600;
 }
-.tag-option:hover, .tag-option:focus-visible { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.tag-option:hover, .tag-option:focus-visible { border-color: var(--accent); color: var(--accent); }
+.tag-option.on { border: 1px solid var(--accent-soft); background: var(--accent-soft); color: var(--accent); }
 .tag-editor .tag { display: inline-flex; align-items: center; gap: 2px; padding-right: 3px; }
+.tag-old { opacity: .75; }
 .tag-x {
   all: unset; cursor: pointer; width: 18px; height: 18px; display: grid; place-items: center;
   border-radius: 50%; font-size: 14px; font-weight: 700; line-height: 1; opacity: .7;
 }
 .tag-x:hover, .tag-x:focus-visible { opacity: 1; background: rgba(0, 0, 0, .08); }
-.tag-add input {
-  width: 110px; padding: 2px 9px; border: 1px dashed var(--border); border-radius: 999px;
-  background: var(--surface); font-size: 11.5px; color: var(--text);
-}
-.tag-add input:focus { width: 150px; outline: none; border-style: solid; border-color: var(--accent); }
 
 /* ---------- Wingmate ---------- */
 .wm-result, .wm-preview { margin: 8px 0; font-size: 13px; }
