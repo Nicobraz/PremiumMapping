@@ -566,9 +566,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
   color: var(--text); font-size: 12.5px; font-weight: 600;
 }
-.tag-option small { color: var(--muted); font-weight: 400; }
 .tag-option:hover, .tag-option:focus-visible { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-.tag-option.create { border-style: dashed; color: var(--accent); }
 .tag-editor .tag { display: inline-flex; align-items: center; gap: 2px; padding-right: 3px; }
 .tag-x {
   all: unset; cursor: pointer; width: 18px; height: 18px; display: grid; place-items: center;

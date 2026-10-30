@@ -612,6 +612,7 @@ def tool_overview(args):
                    "unassigned": sum(1 for n in nodes.values() if not n["owner_rep"]),
                    "connections": db.execute("SELECT COUNT(*) AS c FROM edges").fetchone()["c"]},
         "reps": [r["name"] for r in db.execute("SELECT name FROM reps WHERE active = 1 ORDER BY name")],
+        "company_tags": list(core.TAG_LIST),
         "company_tags_in_use": sorted(core.known_tags(db).values(), key=str.lower),
         "stages_in_use": dict(sorted(stages.items(), key=lambda kv: -kv[1])),
         "relationship_types": list(core.REL_TYPES),
@@ -1007,7 +1008,6 @@ def tool_bulk(args):
     for ckey, c in new_companies.items():
         company_ids[ckey] = db.insert("nodes", {"type": "company", "name": c["name"], "owner_rep": c["owner"],
                                                 "created_at": ts, "updated_at": ts, "updated_by": who})
-    known = core.known_tags(db)
     for p in adds:
         row = p["_row"]
         values, err = core.clean_node_fields(db, {
@@ -1025,7 +1025,7 @@ def tool_bulk(args):
         if cid and tags:
             current = db.execute("SELECT tags FROM nodes WHERE id = ?", (cid,)).fetchone()["tags"]
             db.execute("UPDATE nodes SET tags = ? WHERE id = ?",
-                       (core.join_tags(db, as_list(current) + tags, known), cid))
+                       (core.join_tags(as_list(current) + tags, keep=as_list(current)), cid))
     added = sum(1 for p in adds if "id" in p)
     if added or new_companies:
         people_word = "contact" if added == 1 else "contacts"
@@ -1203,7 +1203,7 @@ def schema(properties, required=()):
 S = {"type": "string"}
 INT = {"type": "integer"}
 ID = {"type": "integer", "description": "PSS Connect record id (from search_records)."}
-TAGS = {"type": "array", "items": {"type": "string"}}
+TAGS = {"type": "array", "items": {"type": "string"}, "description": "Only tags from pss_overview's company_tags."}
 OWNER = {"type": "string", "description": "Admins only: rep to assign it to (a rep's name, or 'unassigned'). "
                                           "Reps' new records are always their own."}
 CONTACT_FIELDS = {
@@ -1272,7 +1272,8 @@ TOOLS = [
      "Add a dated note to any company or contact (meeting recap, call summary, next steps). Anyone can.",
      schema({"id": ID, "text": S}, ["id", "text"])),
     ("update_company_tags", "Tag a company", WRITE_SAME, tool_tags,
-     "Add or remove tags on any company (tags are for companies only). New tags join the shared tag list.",
+     "Add or remove tags on any company (tags are for companies only). Only the tags in pss_overview's "
+     "company_tags can be added.",
      schema({"id": ID, "add": TAGS, "remove": TAGS}, ["id"])),
     ("connect_records", "Connect two records", WRITE, tool_connect,
      "Record a relationship between two records (any rep can connect anyone's records). "
@@ -1292,7 +1293,7 @@ TOOLS = [
      "first, show the rep the preview, and only call again with the same rows and confirm=true once they agree.",
      schema({"rows": {"type": "array", "maxItems": BULK_MAX, "items": schema({
          "name": S, "company": S, **CONTACT_FIELDS,
-         "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for the contact's company."},
+         "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for the contact's company, from pss_overview's company_tags."},
          "high_priority": {"type": "boolean"}, "owner": OWNER}, ["name"])},
              "confirm": {"type": "boolean", "description": "false = preview only (nothing saved); true = save."}},
             ["rows", "confirm"])),

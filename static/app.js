@@ -794,6 +794,7 @@ async function doSync() {
       state.notes.get(note.node_id).push(note);
     }
     state.reps = data.reps || [];
+    state.tagList = data.tag_list || [];
     state.transfers = data.transfers || [];
     renderRequestsBadge();
     $('#storage-warning').hidden = !data.temporary_storage;
@@ -1405,8 +1406,8 @@ function actionsHtml(n) {
   return `${offMap}<div class="card-actions">${btns.join('')}</div>${cardFlowsHtml(n)}${picker}${transferBannerHtml(n)}${viewOnly}`;
 }
 
-// Anyone can add or remove a company's tags (not just its owner); new tags
-// join the shared list that the "+ Add tag" box suggests.
+// Anyone can add or remove a company's tags (not just its owner), picked from the
+// fixed list (state.tagList). Older tags stay until removed.
 function tagEditorHtml(n) {
   const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
   return `<div class="tags tag-editor">
@@ -1416,35 +1417,20 @@ function tagEditorHtml(n) {
   </div>`;
 }
 
-// Clickable tag suggestions: existing tags (most used first) plus "Create" for a new one.
+// Clickable tag choices: the fixed list, minus tags the company already has.
 function tagSuggestions(company, query) {
   const have = new Set(splitTags(company.tags));
-  const used = new Map();
-  for (const n of state.nodes.values()) {
-    if (n.type !== 'company') continue;
-    for (const t of String(n.tags || '').split(',').map((x) => x.trim()).filter(Boolean)) {
-      const entry = used.get(t.toLowerCase()) || { tag: t, n: 0 };
-      entry.n += 1;
-      used.set(t.toLowerCase(), entry);
-    }
-  }
   const q = query.trim().toLowerCase();
-  const items = [...used.values()]
-    .filter((x) => !have.has(x.tag.toLowerCase()) && (!q || x.tag.toLowerCase().includes(q)))
-    .sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag))
-    .slice(0, 10);
-  const create = q && !used.has(q) && !have.has(q) ? query.trim() : '';
-  return { items, create };
+  return (state.tagList || []).filter((t) => !have.has(t.toLowerCase()) && (!q || t.toLowerCase().includes(q)));
 }
 
 function showTagSuggestions(input) {
   const box = input.closest('.tag-editor')?.querySelector('.tag-suggest');
   const company = state.panel?.kind === 'node' ? state.nodes.get(state.panel.id) : null;
   if (!box || !company) return;
-  const { items, create } = tagSuggestions(company, input.value);
-  box.innerHTML = items.map((x) => `<button type="button" role="option" class="tag-option" data-addtag="${esc(x.tag)}">${esc(x.tag)}<small>${x.n}</small></button>`).join('')
-    + (create ? `<button type="button" role="option" class="tag-option create" data-addtag="${esc(create)}">+ Create “${esc(create)}”</button>` : '')
-    + (!items.length && !create ? '<span class="muted">Type to create a new tag</span>' : '');
+  const items = tagSuggestions(company, input.value);
+  box.innerHTML = items.map((t) => `<button type="button" role="option" class="tag-option" data-addtag="${esc(t)}">${esc(t)}</button>`).join('')
+    || `<span class="muted">${input.value.trim() ? 'No tag by that name' : 'It has every tag'}</span>`;
   box.hidden = false;
 }
 
@@ -2491,7 +2477,8 @@ panel.addEventListener('submit', async (evt) => {
       renderWingmateSection();
       toast(`Connected to Wingmate${state.wingmate.campaign_name ? `: ${state.wingmate.campaign_name}` : ''}`);
     } else if (form.dataset.form === 'add-tag') {
-      await addTag(data.tag);  // Enter still works for typed tags
+      const match = tagSuggestions(state.nodes.get(state.panel.id), data.tag)[0];
+      if (match) await addTag(match);  // Enter picks the first match
     } else if (form.dataset.form === 'my-password') {
       if (data.new_password !== data.confirm) { toast('The two passwords don’t match', true); return; }
       await api('POST', '/api/me/password', { new_password: data.new_password });

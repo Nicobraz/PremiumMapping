@@ -589,8 +589,20 @@ def duplicate_response(duplicates, node_type):
 
 # ---------- company tags ----------
 
+# The only tags a company can be given. Tags from before the list stay on their companies
+# until someone removes them, but can't be added again.
+TAG_LIST = ("Commercial GC", "Residential GC", "Custom Homes", "Pools", "Landscapers",
+            "Property Management", "Government")
+
+
 def clean_tag(tag):
     return re.sub(r"\s+", " ", str(tag or "").replace(",", " ")).strip()[:40]
+
+
+def listed_tag(tag):
+    """The list's spelling of a tag ('pool', 'LANDSCAPER' -> 'Pools', 'Landscapers'), or ''."""
+    key = clean_tag(tag).lower().rstrip("s")
+    return next((t for t in TAG_LIST if t.lower().rstrip("s") == key), "") if key else ""
 
 
 def known_tags(db):
@@ -604,15 +616,16 @@ def known_tags(db):
     return tags
 
 
-def join_tags(db, raw_tags, existing=None):
-    """De-duplicates tags and reuses the spelling already in use ('GYM' -> 'gym')."""
-    known = known_tags(db) if existing is None else existing
+def join_tags(raw_tags, keep=()):
+    """De-duplicates tags in the list's spelling, dropping any not on TAG_LIST unless
+    they're in keep (tags the company already has)."""
+    kept = {clean_tag(t).lower() for t in keep}
     out, seen = [], set()
     for raw in raw_tags:
-        tag = clean_tag(raw)
+        tag = listed_tag(raw) or (clean_tag(raw) if clean_tag(raw).lower() in kept else "")
         if tag and tag.lower() not in seen:
             seen.add(tag.lower())
-            out.append(known.get(tag.lower(), tag))
+            out.append(tag)
     return ", ".join(out)
 
 
@@ -627,7 +640,7 @@ def clean_node_fields(db, data, node_type):
         out["stage"] = ""  # stage belongs to contacts
     if "tags" in out:
         # Tags belong to companies only; for companies keep a tidy, de-duplicated list.
-        out["tags"] = join_tags(db, out["tags"].split(",")) if node_type == "company" else ""
+        out["tags"] = join_tags(out["tags"].split(",")) if node_type == "company" else ""
     if "name" in out and not out["name"]:
         return None, "Name is required"
     for field in ("x", "y"):
@@ -775,7 +788,7 @@ def get_graph():
     remember_version(version, generation)
     if since is not None and since == version:
         return jsonify({"version": version, "unchanged": True})
-    return jsonify({"version": version, "temporary_storage": TEMPORARY_STORAGE, **snapshot(db)})
+    return jsonify({"version": version, "temporary_storage": TEMPORARY_STORAGE, "tag_list": TAG_LIST, **snapshot(db)})
 
 
 # ---------- nodes ----------
@@ -1010,8 +1023,10 @@ def change_tags(node_id):
     add, remove = clean_tag(data.get("add")), clean_tag(data.get("remove"))
     current = [t.strip() for t in node["tags"].split(",") if t.strip()]
     if add:
-        tags = join_tags(db, current + [add])
-        summary = f"Tagged {node['name']} \u201c{known_tags(db).get(add.lower(), add)}\u201d"
+        if not listed_tag(add):
+            return bad(f"Pick one of: {', '.join(TAG_LIST)}")
+        tags = join_tags(current + [add], keep=current)
+        summary = f"Tagged {node['name']} \u201c{listed_tag(add)}\u201d"
     elif remove:
         removed = next((t for t in current if t.lower() == remove.lower()), remove)
         tags = ", ".join(t for t in current if t.lower() != remove.lower())
@@ -1857,7 +1872,7 @@ def import_csv():
         values["tags"] = ""  # tags belong to companies
         if company_id and row.get("tags"):
             company_tags = db.execute("SELECT tags FROM nodes WHERE id = ?", (company_id,)).fetchone()["tags"]
-            merged = join_tags(db, company_tags.split(",") + row["tags"].split(","))
+            merged = join_tags(company_tags.split(",") + row["tags"].split(","), keep=company_tags.split(","))
             db.execute("UPDATE nodes SET tags = ? WHERE id = ?", (merged, company_id))
         values.update(type="person", company_id=company_id, created_at=ts, updated_at=ts, updated_by=who)
         if not admin:
