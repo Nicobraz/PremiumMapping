@@ -612,7 +612,7 @@ def tool_overview(args):
                    "unassigned": sum(1 for n in nodes.values() if not n["owner_rep"]),
                    "connections": db.execute("SELECT COUNT(*) AS c FROM edges").fetchone()["c"]},
         "reps": [r["name"] for r in db.execute("SELECT name FROM reps WHERE active = 1 ORDER BY name")],
-        "company_tags": list(core.TAG_LIST),
+        "company_tags": core.tag_list(db),
         "company_tags_in_use": sorted(core.known_tags(db).values(), key=str.lower),
         "stages_in_use": dict(sorted(stages.items(), key=lambda kv: -kv[1])),
         "relationship_types": list(core.REL_TYPES),
@@ -1025,7 +1025,7 @@ def tool_bulk(args):
         if cid and tags:
             current = db.execute("SELECT tags FROM nodes WHERE id = ?", (cid,)).fetchone()["tags"]
             db.execute("UPDATE nodes SET tags = ? WHERE id = ?",
-                       (core.join_tags(as_list(current) + tags, keep=as_list(current)), cid))
+                       (core.join_tags(db, as_list(current) + tags, keep=as_list(current)), cid))
     added = sum(1 for p in adds if "id" in p)
     if added or new_companies:
         people_word = "contact" if added == 1 else "contacts"

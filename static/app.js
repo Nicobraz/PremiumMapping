@@ -63,7 +63,7 @@ const state = {
   dirFilters: [],       // [{ field, value }] in the Contacts list
   stageFilter: '',
   view: storeGet('pss.view') || 'team',  // 'team', 'mine' or (admins) a rep's name
-  viewSets: null,       // { visible, context } node ids when a rep view is on
+  viewSets: null,       // { visible } node ids when a rep view is on
   mapIds: null,         // node ids drawn on the map (the rest are saved off the map)
   tagFilter: '',
   cityFilter: '',
@@ -74,8 +74,15 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const hasPos = (n) => n && n.x != null && n.y != null;
+// Where a record sits right now: its spot in the rep's view being shown, else its
+// Team view spot (shared by everyone).
+const posFor = (n) => state.viewPos?.get(n.id) || (hasPos(n) ? { x: n.x, y: n.y } : undefined);
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 const splitTags = (s) => String(s || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+// Every company should have a tag; one without shows (and filters as) "(unknown)".
+const UNKNOWN_TAG = '(unknown)';
+const companyTags = (c) => String(c?.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+const tagsOrUnknown = (c) => { const t = companyTags(c); return t.length ? t : [UNKNOWN_TAG]; };
 
 function storeGet(key) { try { return localStorage.getItem(key) || ''; } catch { return ''; } }
 function storeSet(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } }
@@ -146,6 +153,10 @@ async function loadMe() {
     setTimeout(loadMe, POLL_MS);
     return;
   }
+  // Reps start in My view (just their records) each time they open PSS Connect;
+  // Team view is one click away. Admins keep whichever view they used last.
+  if (me.rep && !me.rep.is_admin && state.viewDefaultedFor !== me.rep.id) state.view = 'mine';
+  if (me.rep) state.viewDefaultedFor = me.rep.id;
   state.me = me.rep;
   state.adminConfigured = me.admin_configured;
   state.adminEnvManaged = me.env_managed;
@@ -158,7 +169,42 @@ async function loadMe() {
   showSignIn(false);
   sync();
   loadWmSync();
+  if (me.rep) showAnnouncements();
 }
+
+// ---------- messages from the admin ----------
+// Shown once per rep when they open PSS Connect; "Got it" marks it read.
+const announceDialog = $('#announce-dialog');
+let announceQueue = [];
+let announceTotal = 0;
+
+async function showAnnouncements() {
+  if (announceDialog.open) return;
+  try {
+    announceQueue = (await api('GET', '/api/announcements/unread')).announcements;
+  } catch { return; }
+  announceTotal = announceQueue.length;
+  showNextAnnouncement();
+}
+
+function showNextAnnouncement() {
+  const a = announceQueue[0];
+  if (!a) { if (announceDialog.open) announceDialog.close(); return; }
+  $('#announce-title').textContent = `Message from ${a.created_by || 'your admin'}`;
+  $('#announce-count').textContent = announceTotal > 1 ? `${announceTotal - announceQueue.length + 1} of ${announceTotal}` : '';
+  $('#announce-meta').textContent = new Date(a.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  $('#announce-text').textContent = a.message;
+  if (!announceDialog.open) announceDialog.showModal();
+  $('#announce-ok').focus();
+}
+
+$('#announce-ok').addEventListener('click', async () => {
+  const a = announceQueue.shift();
+  if (a) api('POST', `/api/announcements/${a.id}/read`).catch(() => {});
+  showNextAnnouncement();
+});
+// Escape doesn't skip a message: it has to be acknowledged.
+announceDialog.addEventListener('cancel', (evt) => evt.preventDefault());
 
 $('#signin-form').addEventListener('submit', async (evt) => {
   evt.preventDefault();
@@ -303,7 +349,6 @@ function graphStyle() {
     { selector: '.dim, .faded', style: { 'opacity': 0.13 } },
     { selector: '.hidden-rel', style: { 'display': 'none' } },
     { selector: '.view-hidden', style: { 'display': 'none' } },
-    { selector: 'node.ctx', style: { 'opacity': 0.45, 'border-style': 'dashed', 'border-width': 2, 'border-color': cssVar('--muted') } },
   ];
 }
 
@@ -349,7 +394,7 @@ function nodeElement(n) {
   return {
     group: 'nodes',
     data: { id: `n${n.id}`, nid: n.id, kind: n.type, label, color: nodeColor(n), priority: n.priority ? 1 : 0 },
-    position: hasPos(n) ? { x: n.x, y: n.y } : undefined,
+    position: posFor(n),
   };
 }
 
@@ -439,8 +484,8 @@ let tagFrame = 0;
 function renderTagPills() {
   const seen = new Set();
   for (const n of mapNodes()) {
-    const tags = n.type === 'company' ? String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean) : [];
-    if (!tags.length) continue;
+    if (n.type !== 'company') continue;
+    const tags = companyTags(n);
     seen.add(n.id);
     let el = tagPills.get(n.id);
     if (!el) {
@@ -449,7 +494,7 @@ function renderTagPills() {
       tagLayer.appendChild(el);
       tagPills.set(n.id, el);
     }
-    const html = tags.map((t) => `<span>${esc(t)}</span>`).join('');
+    const html = tags.length ? tags.map((t) => `<span>${esc(t)}</span>`).join('') : `<span class="unknown">${UNKNOWN_TAG}</span>`;
     if (el.innerHTML !== html) el.innerHTML = html;
   }
   for (const [id, el] of tagPills) {
@@ -536,6 +581,7 @@ function render() {
   scheduleBends();
   refreshViewOptions();
   applyView();
+  placeViewMissing();
   renderTagPills();
   applyFilters();
   applyFocus();
@@ -555,8 +601,9 @@ function placeUnpositioned() {
     runLayout(true);
     return;
   }
-  const placed = cy.nodes().filter((el) => hasPos(state.nodes.get(el.data('nid'))));
-  const bb = placed.boundingBox();
+  // Team view spots, even while a rep's view (with its own spots) is on screen.
+  const placed = all.filter(hasPos);
+  const bb = { x2: Math.max(...placed.map((n) => n.x)), y1: Math.min(...placed.map((n) => n.y)) };
   const updates = [];
   let slot = 0;
   const cols = Math.max(4, Math.ceil(Math.sqrt(missing.filter((n) => n.type === 'company').length)));
@@ -578,10 +625,10 @@ function placeUnpositioned() {
     }
     n.x = Math.round(pos.x);
     n.y = Math.round(pos.y);
-    cy.getElementById(`n${n.id}`).position({ x: n.x, y: n.y });
+    if (!state.viewPos) cy.getElementById(`n${n.id}`).position({ x: n.x, y: n.y });
     updates.push({ id: n.id, x: n.x, y: n.y });
   }
-  savePositions(updates);
+  savePositions(updates, '');
 }
 
 // Org-chart layout: companies in rows across the top, each company's people beneath it
@@ -655,8 +702,11 @@ function orgChartPlan() {
 }
 
 // Tries a range of row widths and keeps the one whose overall shape best matches the screen.
-function orgChartPositions() {
-  const plan = orgChartPlan();
+function orgChartPositions(plan = orgChartPlan()) {
+  return bestOrgChart(plan).pos;
+}
+
+function bestOrgChart(plan) {
   const aspect = Math.max(0.5, cy.width() / Math.max(1, cy.height()));
   let best = null;
   for (let width = 600; width <= 8000; width += 200) {
@@ -664,52 +714,25 @@ function orgChartPositions() {
     const score = Math.abs(Math.log((layout.width / Math.max(layout.height, 1)) / aspect));
     if (!best || score < best.score - 0.01) best = { ...layout, score };
   }
-  return best.pos;
+  return best;
 }
 
-function orgChartFor(plan, maxWidth) {
-  const pos = {};
-  let x = 0;
-  let y = 0;
-  let bandHeight = 0;
-  for (const { company, staff } of plan.columns) {
-    const across = Math.max(1, Math.min(staff.length, ORG.perRow));
-    const width = ORG.colWidth + (across - 1) * ORG.personGap;
-    if (x > 0 && x + width > maxWidth) {  // start a new band of companies
-      y += bandHeight + ORG.bandGap;
-      x = 0;
-      bandHeight = 0;
-    }
-    const middle = x + width / 2;
-    pos[company.id] = { x: middle, y };
-    staff.forEach((p, i) => {
-      const row = Math.floor(i / ORG.perRow);
-      const inRow = Math.min(ORG.perRow, staff.length - row * ORG.perRow);  // a short last row is centred too
-      pos[p.id] = { x: middle + ((i % ORG.perRow) - (inRow - 1) / 2) * ORG.personGap,
-                    y: y + ORG.firstGap + row * ORG.rowGap };
-    });
-    const rows = Math.ceil(staff.length / ORG.perRow);
-    bandHeight = Math.max(bandHeight, rows ? ORG.firstGap + (rows - 1) * ORG.rowGap : 0);
-    x += width;
-  }
-  let widest = Math.max(x, ORG.colWidth);
-  let bottom = y + bandHeight;
-  if (plan.loose.length) {
-    const top = plan.columns.length ? bottom + ORG.bandGap : 0;
-    const perRow = Math.max(4, Math.floor(Math.max(maxWidth, widest) / ORG.colWidth));
-    plan.loose.forEach((p, i) => {
-      pos[p.id] = { x: ORG.colWidth / 2 + (i % perRow) * ORG.colWidth, y: top + Math.floor(i / perRow) * ORG.rowGap };
-    });
-    widest = Math.max(widest, Math.min(plan.loose.length, perRow) * ORG.colWidth);
-    bottom = top + Math.floor((plan.loose.length - 1) / perRow) * ORG.rowGap;
-  }
-  return { pos, width: widest, height: bottom + ORG.rowGap };
+// A rep's view as an org chart of just their records.
+function viewChartPositions() {
+  const v = state.viewSets;
+  const plan = orgChartPlan();
+  if (!v) return orgChartPositions(plan);
+  const mine = (n) => v.visible.has(n.id);
+  return orgChartPositions({ columns: plan.columns.filter((c) => mine(c.company)).map((c) => ({ ...c, staff: c.staff.filter(mine) })),
+                             loose: plan.loose.filter(mine) });
 }
 
 function runLayout(randomize) {
-  if (!cy.nodes().length) return;
-  const target = orgChartPositions();
-  const layout = cy.layout({
+  const inRepView = !!(viewRep() && state.viewPos);
+  const eles = inRepView ? cy.nodes().not('.view-hidden') : cy.nodes();
+  if (!eles.length) return;
+  const target = inRepView ? viewChartPositions() : orgChartPositions();
+  const layout = eles.layout({
     name: 'preset',
     positions: (el) => target[el.data('nid')] || el.position(),
     animate: !randomize,
@@ -718,21 +741,29 @@ function runLayout(randomize) {
     padding: 50,
   });
   layout.one('layoutstop', () => {
-    const updates = cy.nodes().map((el) => {
-      const p = el.position();
-      const n = state.nodes.get(el.data('nid'));
-      if (n) { n.x = Math.round(p.x); n.y = Math.round(p.y); }
-      return { id: el.data('nid'), x: Math.round(p.x), y: Math.round(p.y) };
-    });
+    const updates = eles.map((el) => rememberPos(el.data('nid'), el.position()));
     savePositions(updates);
   });
   layout.run();
 }
 
-async function savePositions(positions) {
+// Records a spot in the view being shown: a rep's view, or Team view (on the record).
+function rememberPos(id, p) {
+  const spot = { id, x: Math.round(p.x), y: Math.round(p.y) };
+  if (state.viewPos) state.viewPos.set(id, { x: spot.x, y: spot.y });
+  else {
+    const n = state.nodes.get(id);
+    if (n) { n.x = spot.x; n.y = spot.y; }
+  }
+  return spot;
+}
+
+// view: the rep view the positions belong to; '' for Team view. Defaults to the view shown.
+async function savePositions(positions, view = state.viewPos ? state.viewPosFor : '') {
   if (!positions.length) return;
   try {
-    await api('PATCH', '/api/nodes/positions', { positions });
+    await api('PATCH', '/api/nodes/positions', { positions, view });
+    if (view) return;  // a rep's view is kept apart from the shared map
     sync();
   } catch (err) {
     toast(err.message, true);
@@ -745,10 +776,7 @@ cy.on('render', scheduleTagPositions);
 
 cy.on('dragfree', 'node', (evt) => {
   const el = evt.target;
-  const p = el.position();
-  const n = state.nodes.get(el.data('nid'));
-  if (n) { n.x = Math.round(p.x); n.y = Math.round(p.y); }
-  pendingPositions.set(el.data('nid'), { id: el.data('nid'), x: Math.round(p.x), y: Math.round(p.y) });
+  pendingPositions.set(el.data('nid'), rememberPos(el.data('nid'), el.position()));
   clearTimeout(positionTimer);
   positionTimer = setTimeout(() => {
     const batch = [...pendingPositions.values()];
@@ -864,7 +892,7 @@ function filterMatches() {
     if (!inView(n.id)) continue;  // filters work within the current view
     if (owner && n.owner_rep.trim().toLowerCase() !== owner) continue;
     const company = n.type === 'company' ? n : companyOf(n);
-    if (tag && !(company && splitTags(company.tags).includes(tag))) continue;  // tags live on companies
+    if (tag && !(company && tagsOrUnknown(company).some((t) => t.toLowerCase() === tag))) continue;  // tags live on companies
     if (city && !(cityOk(n) || (company && cityOk(company)) || (n.type === 'company' && peopleAt(n.id).some(cityOk)))) continue;
     // Stage lives on contacts; a company matches through its contacts.
     if (stage && !(n.type === 'person' ? stageOk(n) : peopleAt(n.id).some((p) => inView(p.id) && stageOk(p)))) continue;
@@ -875,10 +903,10 @@ function filterMatches() {
 }
 
 // ---------- team view / rep view ----------
-// Team view is the whole shared map, each company once. A rep's view shows what's
-// theirs: their companies and contacts, plus any company where one of their contacts
-// works (so a company two reps both work shows in both views), plus faded "context"
-// for other reps' contacts they've connected to.
+// Team view is the whole shared map, each company once. A rep's view (My view, or for
+// admins any rep's) shows only what's theirs: the companies and contacts assigned to
+// them (Wingmate's lead owner, or ones they added), plus any company where one of their
+// contacts works. Nothing of other reps' shows there. Reps open in My view.
 
 function viewRep() {
   if (state.view === 'team') return '';
@@ -888,19 +916,13 @@ function viewRep() {
 
 function computeViewSets(rep) {
   const r = rep.trim().toLowerCase();
-  const own = (n) => n.owner_rep.trim().toLowerCase() === r;
   const visible = new Set();
   for (const n of state.nodes.values()) {
-    if (!own(n)) continue;
+    if (n.owner_rep.trim().toLowerCase() !== r) continue;
     visible.add(n.id);
     if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) visible.add(n.company_id);
   }
-  const context = new Set();
-  for (const e of state.edges.values()) {
-    if (visible.has(e.source_id) && !visible.has(e.target_id)) context.add(e.target_id);
-    if (visible.has(e.target_id) && !visible.has(e.source_id)) context.add(e.source_id);
-  }
-  return { visible, context };
+  return { visible };
 }
 
 function inView(id) {
@@ -909,7 +931,7 @@ function inView(id) {
 
 function inRepView(id) {
   const v = state.viewSets;
-  return !v || v.visible.has(id) || v.context.has(id);
+  return !v || v.visible.has(id);
 }
 
 function applyView() {
@@ -920,11 +942,90 @@ function applyView() {
   cy.batch(() => {
     cy.nodes().forEach((el) => {
       const id = el.data('nid');
-      el.toggleClass('view-hidden', !!v && !v.visible.has(id) && !v.context.has(id));
-      el.toggleClass('ctx', !!v && v.context.has(id));
+      el.toggleClass('view-hidden', !!v && !v.visible.has(id));
     });
   });
   $('#view-select').classList.toggle('active', !!v);
+  if ((rep || '').toLowerCase() !== (state.viewPosFor || '')) loadViewPositions();
+}
+
+// ---------- each rep's view keeps its own arrangement ----------
+// Team view uses the shared positions on each record. A rep's view (My view or, for
+// admins, any rep's) has its own: the first time it's opened it's arranged as an org
+// chart of the rep's records; after that, dragging or ✣ there only changes that view.
+let viewPosLoading = '';
+
+async function loadViewPositions() {
+  const rep = viewRep().toLowerCase();
+  state.viewPos = null;
+  state.viewPosFor = rep;
+  if (!rep) { applyViewPositions(); return; }
+  if (viewPosLoading === rep) return;
+  viewPosLoading = rep;
+  let positions = {};
+  try { positions = (await api('GET', `/api/view-positions?view=${encodeURIComponent(rep)}`)).positions; }
+  catch { /* falls back to a fresh arrangement */ }
+  viewPosLoading = '';
+  if (state.viewPosFor !== rep) return;  // switched views meanwhile
+  state.viewPos = new Map(Object.entries(positions).map(([id, [x, y]]) => [Number(id), { x, y }]));
+  applyViewPositions();
+  if (state.viewSets && !state.viewSets.visible.size) {
+    toast(`Nothing is assigned to ${state.view === 'mine' ? 'you' : viewRep()} yet. Switch to Team view to see everyone's.`);
+  }
+}
+
+function applyViewPositions() {
+  cy.batch(() => cy.nodes().forEach((el) => {
+    const n = state.nodes.get(el.data('nid'));
+    const p = n && posFor(n);
+    if (p && !el.grabbed()) el.position(p);
+  }));
+  if (!placeViewMissing()) fitView();
+  scheduleBends();
+  scheduleTagPositions();
+}
+
+function fitView() {
+  const v = state.viewSets;
+  const eles = v ? cy.nodes().filter((el) => v.visible.has(el.data('nid'))) : cy.nodes();
+  if (eles.length) moveMap({ fit: { eles, padding: 60 } }, 350);
+}
+
+// The rep's records with no spot in their view yet: the first time, arrange the whole
+// view; after that, a new company goes beside the rest and a new contact under its
+// company. Returns true when it arranged the whole view.
+function placeViewMissing() {
+  const v = state.viewSets;
+  if (!state.viewPos || !v || !viewRep()) return false;
+  const all = mapNodes().filter((n) => v.visible.has(n.id));
+  const missing = all.filter((n) => !state.viewPos.has(n.id));
+  if (!missing.length) return false;
+  if (missing.length === all.length) { runLayout(false); return true; }
+  const placed = all.filter((n) => state.viewPos.has(n.id)).map((n) => state.viewPos.get(n.id));
+  const right = Math.max(...placed.map((p) => p.x)) + 260;
+  const top = Math.min(...placed.map((p) => p.y));
+  let slot = 0;
+  const updates = [];
+  missing.sort((a, b) => (a.type === 'company' ? 0 : 1) - (b.type === 'company' ? 0 : 1));
+  for (const n of missing) {
+    const company = n.company_id != null ? state.viewPos.get(n.company_id) : null;
+    let pos;
+    if (n.type === 'person' && company) {
+      const taken = all.filter((o) => state.viewPos.has(o.id)).map((o) => state.viewPos.get(o.id));
+      for (let i = 0; !pos; i += 1) {
+        const spot = { x: company.x + ((i % ORG.perRow) - (ORG.perRow - 1) / 2) * ORG.personGap,
+                       y: company.y + ORG.firstGap + Math.floor(i / ORG.perRow) * ORG.rowGap };
+        if (!taken.some((o) => Math.abs(o.x - spot.x) < 40 && Math.abs(o.y - spot.y) < 40)) pos = spot;
+      }
+    } else {
+      pos = { x: right + (slot % 4) * 220, y: top + Math.floor(slot / 4) * 220 };
+      slot += 1;
+    }
+    cy.getElementById(`n${n.id}`).position(pos);
+    updates.push(rememberPos(n.id, pos));
+  }
+  savePositions(updates);
+  return false;
 }
 
 function refreshViewOptions() {
@@ -947,11 +1048,7 @@ function setView(view) {
   updateStats();
   scheduleTagPositions();
   applySearch();
-  const shown = cy.nodes().not('.view-hidden');
-  if (state.viewSets && !state.viewSets.visible.size) {
-    toast(`Nothing is assigned to ${view === 'mine' ? 'you' : view} yet. Switch to Team view to see everyone's.`);
-  }
-  if (shown.length) moveMap({ fit: { eles: shown, padding: 60 } }, 350);
+  if (state.viewPos || !viewRep()) fitView();  // otherwise it fits once the view's layout loads
 }
 
 $('#view-select').addEventListener('change', (evt) => setView(evt.target.value));
@@ -1014,7 +1111,7 @@ function refreshFilterOptions() {
   for (const r of activeReps()) owners.set(r.name.toLowerCase(), { value: r.name, n: 0 });
   for (const n of state.nodes.values()) {
     if (n.owner_rep.trim()) bump(owners, n.owner_rep.trim());
-    if (n.type === 'company') for (const t of String(n.tags || '').split(',').map((x) => x.trim()).filter(Boolean)) bump(tags, t);
+    if (n.type === 'company') for (const t of tagsOrUnknown(n)) bump(tags, t);
     if (cityOf(n)) bump(cities, cityOf(n));
     if (n.type === 'person' && n.stage.trim()) bump(stages, n.stage.trim());
   }
@@ -1406,11 +1503,12 @@ function actionsHtml(n) {
   return `${offMap}<div class="card-actions">${btns.join('')}</div>${cardFlowsHtml(n)}${picker}${transferBannerHtml(n)}${viewOnly}`;
 }
 
-// Anyone can add or remove a company's tags (not just its owner). Every tag on the fixed
-// list (state.tagList) shows as an on/off chip, so a company can have as many as fit;
-// older tags not on the list show with an × until removed.
+// Anyone can add or remove a company's tags (not just its owner). Every tag on the list
+// (state.tagList: the built-in tags plus ones reps created, shared by everyone) shows as
+// an on/off chip, so a company can have as many as fit; "+ New tag" adds one to the list
+// for everyone. Older tags not on the list show with an × until removed.
 function tagEditorHtml(n) {
-  const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const tags = companyTags(n);
   const have = new Set(tags.map((t) => t.toLowerCase()));
   const list = state.tagList || [];
   const listed = new Set(list.map((t) => t.toLowerCase()));
@@ -1419,7 +1517,15 @@ function tagEditorHtml(n) {
       ? `<button type="button" class="tag-option on" data-untag="${esc(t)}" aria-pressed="true" title="Remove tag">✓ ${esc(t)}</button>`
       : `<button type="button" class="tag-option" data-addtag="${esc(t)}" aria-pressed="false" title="Add tag">${esc(t)}</button>`).join('')}
     ${tags.filter((t) => !listed.has(t.toLowerCase())).map((t) => `<span class="tag tag-old" title="Not on the tag list any more">${esc(t)}<button type="button" class="tag-x" data-untag="${esc(t)}" title="Remove tag" aria-label="Remove tag ${esc(t)}">×</button></span>`).join('')}
-  </div>`;
+    ${state.newTagFor === n.id ? '' : '<button type="button" class="tag-option tag-create" data-newtag="open" title="Make a new tag everyone can use">+ New tag</button>'}
+  </div>
+  ${tags.length ? '' : '<p class="tag-unknown-note">Tag: <b>(unknown)</b>. Pick the tags that fit this company.</p>'}
+  ${state.newTagFor === n.id ? `<form class="tag-new-form" data-form="tag-new">
+      <input name="tag" required maxlength="40" placeholder="New tag name" aria-label="New tag name" autocomplete="off">
+      <button type="submit" class="btn btn-sm btn-primary">Add tag</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-newtag="cancel">Cancel</button>
+      <p class="muted">Everyone can then use it on any company.</p>
+    </form>` : ''}`;
 }
 
 async function addTag(tag) {
@@ -1435,8 +1541,8 @@ async function addTag(tag) {
 
 function tagChipsHtml(n) {
   if (n.type !== 'company') return '';
-  const tags = String(n.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
-  return tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : '';
+  const tags = companyTags(n);
+  return `<div class="tags">${tags.length ? tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('') : `<span class="tag tag-unknown">${UNKNOWN_TAG}</span>`}</div>`;
 }
 
 function factsHtml(n, skip = []) {
@@ -2035,7 +2141,7 @@ function dirValues(field, n) {
   switch (field) {
     case 'company': return company ? [company.name] : ['No company'];
     case 'priority': return staff.some((p) => p.priority) ? ['High priority'] : ['Not high priority'];
-    case 'tag': return company ? String(company.tags || '').split(',').map((t) => t.trim()).filter(Boolean) : [];
+    case 'tag': return company ? tagsOrUnknown(company) : [];
     case 'city': return [...new Set([cityOf(n), company ? cityOf(company) : ''].filter(Boolean))];
     case 'rep': return [n.owner_rep.trim() || 'Unassigned'];
     case 'stage': return [...new Set(staff.map((p) => p.stage.trim()).filter(Boolean))];
@@ -2123,18 +2229,28 @@ function renderDirectoryList() {
   $('#dir-chips').innerHTML = state.dirFilters.map((f, i) =>
     `<button type="button" class="filter-chip" data-dir-remove="${i}" title="Remove this filter">${esc(label[f.field])}: <b>${esc(f.value)}</b> ×</button>`).join('')
     + (state.dirFilters.length > 1 ? '<button type="button" class="link-btn" data-dir-clear>Clear all</button>' : '');
-  const items = dirItems().filter(dirMatches).sort(byName);
+  // In a rep's view, that rep's records come first and everyone else's follow.
+  const v = state.viewSets;
+  const mine = (n) => !!v && v.visible.has(n.id);
+  const items = dirItems().filter(dirMatches).sort((a, b) => (mine(b) - mine(a)) || byName(a, b));
   const kind = state.dirTab === 'companies' ? ['company', 'companies'] : ['contact', 'contacts'];
   const countLine = `<li class="dir-count muted">${plural(items.length, kind[0], kind[1])}${state.dirFilters.length ? ' match' : ''}${bulkFlowHtml(items.length)}</li>`;
+  const whose = state.view === 'mine' ? 'Yours' : `${viewRep()}'s`;
+  const divider = (n, i) => {
+    if (!v) return '';
+    if (i === 0 && mine(n)) return `<li class="dir-divider">${esc(whose)}</li>`;
+    if (!mine(n) && (i === 0 || mine(items[i - 1]))) return '<li class="dir-divider">Everyone else</li>';
+    return '';
+  };
   if (state.dirTab === 'companies') {
-    list.innerHTML = countLine + (items.length ? items.map((c) => {
+    list.innerHTML = countLine + (items.length ? items.map((c, i) => {
       const detail = [plural(peopleAt(c.id).length, 'contact', 'contacts'), c.location, c.owner_rep].filter(Boolean).join(' · ');
-      return `<li data-goto="${c.id}">${avatar(c, 'avatar-sm')}<span class="who"><b>${esc(c.name)}</b>${offMapBadge(c)}<span>${esc(detail)}</span>${tagChipsHtml(c)}</span></li>`;
+      return `${divider(c, i)}<li data-goto="${c.id}">${avatar(c, 'avatar-sm')}<span class="who"><b>${esc(c.name)}</b>${offMapBadge(c)}<span>${esc(detail)}</span>${tagChipsHtml(c)}</span></li>`;
     }).join('') : '<li class="muted">No companies match.</li>');
   } else {
-    list.innerHTML = countLine + (items.length ? items.map((p) => {
+    list.innerHTML = countLine + (items.length ? items.map((p, i) => {
       const detail = [p.title, companyOf(p)?.name, p.owner_rep || 'Unassigned'].filter(Boolean).join(' · ');
-      return `<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}${offMapBadge(p)}<span>${esc(detail)}</span></span></li>`;
+      return `${divider(p, i)}<li data-goto="${p.id}">${avatar(p, 'avatar-sm')}<span class="who"><b>${esc(p.name)}</b>${stageBadge(p)}${offMapBadge(p)}<span>${esc(detail)}</span></span></li>`;
     }).join('') : '<li class="muted">No contacts match.</li>');
   }
   fillDirValues();
@@ -2233,6 +2349,15 @@ panel.addEventListener('click', async (evt) => {
     } catch (err) { toast(err.message, true); }
     return;
   }
+  const stopBtn = evt.target.closest('[data-announce-stop]');
+  if (stopBtn) {
+    if (!confirm('Stop showing this message? Reps who already saw it aren\'t affected.')) return;
+    try {
+      state.announcements = (await api('POST', `/api/announcements/${stopBtn.dataset.announceStop}/stop`)).announcements;
+      renderAnnounceSection();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
   const wmBtn = evt.target.closest('[data-wm-act]');
   if (wmBtn) { await handleWingmateAction(wmBtn.dataset.wmAct); return; }
   const repBtn = evt.target.closest('[data-rep-act]');
@@ -2269,6 +2394,14 @@ panel.addEventListener('click', async (evt) => {
   const mergeRow = evt.target.closest('[data-merge]');
   if (mergeRow) { await mergeInto(p.id, Number(mergeRow.dataset.merge)); return; }
 
+  const newtag = evt.target.closest('[data-newtag]');
+  if (newtag) {
+    state.newTagFor = newtag.dataset.newtag === 'open' ? p.id : null;
+    state.panelDirty = false;
+    rerenderCard();
+    if (state.newTagFor) panel.querySelector('[data-form="tag-new"] input')?.focus();
+    return;
+  }
   const addtag = evt.target.closest('[data-addtag]');
   if (addtag) { await addTag(addtag.dataset.addtag); return; }
 
@@ -2444,6 +2577,23 @@ panel.addEventListener('submit', async (evt) => {
       state.panelDirty = false;
       form.reset();
       toast('Your password was changed');
+    } else if (form.dataset.form === 'tag-new') {
+      const name = data.tag.trim().replace(/\s+/g, ' ');
+      if (!name) return;
+      const existing = (state.tagList || []).find((t) => t.toLowerCase().replace(/s$/, '') === name.toLowerCase().replace(/s$/, ''));
+      if (!existing && !confirm(`Create the tag “${name}” for everyone and add it to this company?`)) return;
+      await api('POST', `/api/nodes/${p.id}/tags`, { add: name, create: true });
+      state.newTagFor = null;
+      state.panelDirty = false;
+      await sync();
+      rerenderCard();
+      toast(existing ? `Tagged “${existing}”` : `Created “${name}”. Everyone can use it now.`);
+    } else if (form.dataset.form === 'announce-new') {
+      if (!confirm('Send this message to every rep?')) return;
+      state.announcements = (await api('POST', '/api/announcements', { message: data.message })).announcements;
+      state.panelDirty = false;
+      renderAnnounceSection();
+      toast('Sent. Reps see it the next time they open PSS Connect.');
     } else if (form.dataset.form === 'admin-password') {
       if (data.new_password !== data.confirm) { toast('The two passwords don’t match', true); return; }
       await api('POST', '/api/admin/password', { new_password: data.new_password });
@@ -2597,6 +2747,7 @@ function openAdminPanel() {
       </form>
       ${reps.length ? `<ul class="rep-list">${reps.map(repRowHtml).join('')}</ul>` : '<p class="muted">No reps yet.</p>'}
     </div>
+    <div class="section" id="announce-section">${announceAdminHtml()}</div>
     ${state.me?.is_admin ? `<div class="section">
       <h3>Your password</h3>
       <form class="rep-form" data-form="my-password">
@@ -2823,6 +2974,38 @@ async function handleWingmateAction(act) {
   } catch (err) { toast(err.message, true); }
 }
 
+function announceAdminHtml() {
+  const list = state.announcements;
+  const items = (list || []).map((a) => {
+    const total = a.read_by.length + a.not_read.length;
+    return `<li><span class="who"><span class="msg">${esc(a.message)}</span>
+        <span>${esc(new Date(a.created_at).toLocaleDateString())} · ${esc(a.created_by)}${a.active ? '' : ' · <b>Stopped</b>'}</span>
+        <details><summary>Read by ${a.read_by.length} of ${total}</summary>
+          ${a.read_by.length ? `<div>Read: ${a.read_by.map(esc).join(', ')}</div>` : ''}
+          ${a.not_read.length ? `<div>Not yet: ${a.not_read.map(esc).join(', ')}</div>` : ''}
+        </details></span>
+      ${a.active ? `<button type="button" class="btn btn-sm btn-ghost" data-announce-stop="${a.id}" title="Reps who haven't seen it won't get it">Stop showing</button>` : ''}</li>`;
+  }).join('');
+  return `<h3>Messages to reps</h3>
+    <p class="muted">Every rep sees the message as a pop-up the next time they open PSS Connect, once, and clicks “Got it”.</p>
+    <form class="rep-form announce-form" data-form="announce-new">
+      <textarea name="message" required maxlength="2000" placeholder="Write a message for the team" aria-label="Message to reps"></textarea>
+      <div class="row-btns"><button type="submit" class="btn btn-sm btn-primary">Send to everyone</button></div>
+    </form>
+    ${list === undefined ? '<p class="muted">Loading…</p>' : items ? `<ul class="rep-list announce-list">${items}</ul>` : '<p class="muted">No messages sent yet.</p>'}`;
+}
+
+function renderAnnounceSection() {
+  const box = $('#announce-section');
+  if (box) box.innerHTML = announceAdminHtml();
+}
+
+async function loadAnnouncementsAdmin() {
+  try { state.announcements = (await api('GET', '/api/announcements')).announcements; }
+  catch { state.announcements = []; }
+  renderAnnounceSection();
+}
+
 function rerenderAdmin() {
   if (state.panel?.kind !== 'admin') return;
   const scroll = panel.scrollTop;
@@ -2876,7 +3059,7 @@ function openAdminLogin() {
 
 $('#btn-admin').addEventListener('click', () => {
   if (state.panel?.kind === 'admin') closePanel();
-  else if (state.isAdmin) openAdminPanel();
+  else if (state.isAdmin) { openAdminPanel(); loadAnnouncementsAdmin(); }
   else if (!state.adminConfigured) toast('Admin isn’t set up yet.', true);
   else openAdminLogin();
 });
@@ -2892,6 +3075,7 @@ $('#admin-login').addEventListener('submit', async (evt) => {
     adminDialog.close();
     await loadMe();
     openAdminPanel();
+    loadAnnouncementsAdmin();
     toast('Logged in as admin');
   } catch (err) {
     $('#admin-error').textContent = err.message;
@@ -3075,6 +3259,11 @@ $('#btn-zoom-in').addEventListener('click', () => cy.animate({ zoom: { level: cy
 $('#btn-zoom-out').addEventListener('click', () => cy.animate({ zoom: { level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } } }, { duration: 150 }));
 $('#btn-fit').addEventListener('click', () => cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 }));
 $('#btn-layout').addEventListener('click', () => {
+  const rep = viewRep();
+  if (rep) {
+    if (confirm(`Arrange ${state.view === 'mine' ? 'your' : `${rep}'s`} view as an org chart? Only this view changes; Team view stays as it is.`)) runLayout(false);
+    return;
+  }
   if (confirm('Arrange the whole map as an org chart (companies across the top, their people in a column under each)? This moves everyone\'s nodes for the whole team.')) runLayout(false);
 });
 $('#empty').addEventListener('click', (evt) => {

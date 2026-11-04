@@ -133,6 +133,29 @@ CREATE TABLE IF NOT EXISTS transfer_requests (
     decided_at  TEXT NOT NULL DEFAULT '',
     decided_by  TEXT NOT NULL DEFAULT ''
 );
+-- Where each record sits in a rep's view (My view / a rep's view). Team view uses the
+-- positions on nodes. Each rep's view keeps its own arrangement here.
+CREATE TABLE IF NOT EXISTS view_positions (
+    view_rep  TEXT NOT NULL,
+    node_id   INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    x         REAL,
+    y         REAL,
+    PRIMARY KEY (view_rep, node_id)
+);
+-- Messages an admin sends to every rep. Each rep sees each one once, on sign-in.
+CREATE TABLE IF NOT EXISTS announcements (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    message     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    created_by  TEXT NOT NULL DEFAULT '',
+    active      INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS announcement_reads (
+    announcement_id  INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+    rep_id           INTEGER NOT NULL,
+    read_at          TEXT NOT NULL,
+    PRIMARY KEY (announcement_id, rep_id)
+);
 CREATE TABLE IF NOT EXISTS backups (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at  TEXT NOT NULL,
@@ -589,20 +612,39 @@ def duplicate_response(duplicates, node_type):
 
 # ---------- company tags ----------
 
-# The only tags a company can be given. Tags from before the list stay on their companies
-# until someone removes them, but can't be added again.
+# The tags a company can be given: the built-in list plus any tag a rep has created
+# (saved in settings as custom_tags, shared by everyone). Tags from before the list stay
+# on their companies until someone removes them, but can't be added again.
 TAG_LIST = ("Commercial GC", "Residential GC", "Custom Homes", "Pools", "Landscapers",
             "Property Management", "Government")
+UNKNOWN_TAG = "(unknown)"  # what an untagged company shows; never stored
+
+
+def custom_tags(db):
+    try:
+        items = json.loads(get_setting(db, "custom_tags") or "[]")
+    except ValueError:
+        items = []
+    return [t for t in (clean_tag(i) for i in items if isinstance(i, str)) if t]
+
+
+def tag_list(db):
+    """Every tag a company can be given: the built-in ones, then created ones A-Z."""
+    return list(TAG_LIST) + sorted(custom_tags(db), key=str.lower)
 
 
 def clean_tag(tag):
     return re.sub(r"\s+", " ", str(tag or "").replace(",", " ")).strip()[:40]
 
 
-def listed_tag(tag):
+def tag_key(tag):
+    return clean_tag(tag).lower().rstrip("s")
+
+
+def listed_tag(tag, tags=TAG_LIST):
     """The list's spelling of a tag ('pool', 'LANDSCAPER' -> 'Pools', 'Landscapers'), or ''."""
-    key = clean_tag(tag).lower().rstrip("s")
-    return next((t for t in TAG_LIST if t.lower().rstrip("s") == key), "") if key else ""
+    key = tag_key(tag)
+    return next((t for t in tags if tag_key(t) == key), "") if key else ""
 
 
 def known_tags(db):
@@ -616,13 +658,14 @@ def known_tags(db):
     return tags
 
 
-def join_tags(raw_tags, keep=()):
-    """De-duplicates tags in the list's spelling, dropping any not on TAG_LIST unless
+def join_tags(db, raw_tags, keep=()):
+    """De-duplicates tags in the list's spelling, dropping any not on the tag list unless
     they're in keep (tags the company already has)."""
+    tags = tag_list(db)
     kept = {clean_tag(t).lower() for t in keep}
     out, seen = [], set()
     for raw in raw_tags:
-        tag = listed_tag(raw) or (clean_tag(raw) if clean_tag(raw).lower() in kept else "")
+        tag = listed_tag(raw, tags) or (clean_tag(raw) if clean_tag(raw).lower() in kept else "")
         if tag and tag.lower() not in seen:
             seen.add(tag.lower())
             out.append(tag)
@@ -640,7 +683,7 @@ def clean_node_fields(db, data, node_type):
         out["stage"] = ""  # stage belongs to contacts
     if "tags" in out:
         # Tags belong to companies only; for companies keep a tidy, de-duplicated list.
-        out["tags"] = join_tags(out["tags"].split(",")) if node_type == "company" else ""
+        out["tags"] = join_tags(db, out["tags"].split(",")) if node_type == "company" else ""
     if "name" in out and not out["name"]:
         return None, "Name is required"
     for field in ("x", "y"):
@@ -788,7 +831,7 @@ def get_graph():
     remember_version(version, generation)
     if since is not None and since == version:
         return jsonify({"version": version, "unchanged": True})
-    return jsonify({"version": version, "temporary_storage": TEMPORARY_STORAGE, "tag_list": TAG_LIST, **snapshot(db)})
+    return jsonify({"version": version, "temporary_storage": TEMPORARY_STORAGE, "tag_list": tag_list(db), **snapshot(db)})
 
 
 # ---------- nodes ----------
@@ -875,8 +918,33 @@ def delete_node(node_id):
     return jsonify({"ok": True})
 
 
+def view_key():
+    """The rep view a position request is about (lowercase rep name), '' for Team view,
+    or None when the caller may not use it: reps use their own view, admins any."""
+    raw = (request.get_json(silent=True) or {}).get("view") if request.method != "GET" else request.args.get("view")
+    view = str(raw or "").strip()
+    if not view:
+        return ""
+    rep = current_rep()
+    if is_admin() or (rep and rep["name"].strip().lower() == view.lower()):
+        return view.lower()
+    return None
+
+
+@app.get("/api/view-positions")
+def get_view_positions():
+    view = view_key()
+    if view is None:
+        return bad("That's another rep's view", 403)
+    if not view:
+        return jsonify({"positions": {}})
+    rows = get_db().execute("SELECT node_id, x, y FROM view_positions WHERE view_rep = ?", (view,)).fetchall()
+    return jsonify({"positions": {str(r["node_id"]): [r["x"], r["y"]] for r in rows if r["x"] is not None}})
+
+
 @app.patch("/api/nodes/positions")
 def save_positions():
+    """Team view positions (shared), or with view, the positions in that rep's view."""
     data = request.get_json(silent=True) or {}
     rows = []
     for item in data.get("positions") or []:
@@ -886,6 +954,16 @@ def save_positions():
     if not rows:
         return jsonify({"updated": 0})
     db = get_db()
+    view = view_key()
+    if view is None:
+        return bad("That's another rep's view", 403)
+    if view:
+        known = {r["id"] for r in db.execute("SELECT id FROM nodes").fetchall()}
+        db.executemany("INSERT INTO view_positions (view_rep, node_id, x, y) VALUES (?, ?, ?, ?) "
+                       "ON CONFLICT (view_rep, node_id) DO UPDATE SET x = excluded.x, y = excluded.y",
+                       [(view, node_id, x, y) for x, y, node_id in rows if node_id in known])
+        db.commit()
+        return jsonify({"updated": len(rows)})
     db.executemany("UPDATE nodes SET x = ?, y = ? WHERE id = ?", rows)
     bump_version(db)
     db.commit()
@@ -1012,7 +1090,8 @@ def move_contact(node_id):
 
 @app.post("/api/nodes/<int:node_id>/tags")
 def change_tags(node_id):
-    """Anyone signed in can add or remove a company's tags, whoever the lead belongs to."""
+    """Anyone signed in can add or remove a company's tags, whoever the lead belongs to.
+    With create, a tag that isn't on the list yet is added to it for everyone."""
     db = get_db()
     node = node_row(db, node_id)
     if not node:
@@ -1022,18 +1101,26 @@ def change_tags(node_id):
     data = request.get_json(silent=True) or {}
     add, remove = clean_tag(data.get("add")), clean_tag(data.get("remove"))
     current = [t.strip() for t in node["tags"].split(",") if t.strip()]
+    created = False
     if add:
-        if not listed_tag(add):
-            return bad(f"Pick one of: {', '.join(TAG_LIST)}")
-        tags = join_tags(current + [add], keep=current)
-        summary = f"Tagged {node['name']} \u201c{listed_tag(add)}\u201d"
+        if not listed_tag(add, tag_list(db)):
+            if not data.get("create"):
+                return bad(f"Pick one of: {', '.join(tag_list(db))}, or create a new tag")
+            if len(tag_key(add)) < 2 or tag_key(add) in ("unknown", tag_key(UNKNOWN_TAG)):
+                return bad("Give the tag a name")
+            set_setting(db, "custom_tags", json.dumps(custom_tags(db) + [add]))
+            created = True
+        tags = join_tags(db, current + [add], keep=current)
+        summary = f"Tagged {node['name']} \u201c{listed_tag(add, tag_list(db))}\u201d"
+        if created:
+            log(db, "tag", f"Created the tag \u201c{add}\u201d")
     elif remove:
         removed = next((t for t in current if t.lower() == remove.lower()), remove)
         tags = ", ".join(t for t in current if t.lower() != remove.lower())
         summary = f"Removed tag \u201c{removed}\u201d from {node['name']}"
     else:
         return bad("Type a tag")
-    if tags != node["tags"]:
+    if tags != node["tags"] or created:
         db.execute("UPDATE nodes SET tags = ?, updated_at = ?, updated_by = ? WHERE id = ?",
                    (tags, now(), actor(), node_id))
         log(db, "tag", summary)
@@ -1080,6 +1167,88 @@ def request_transfer(node_id):
     bump_version(db)
     db.commit()
     return jsonify(transfer_row(db, transfer_id)), 201
+
+
+# ---------- messages to reps ----------
+# An admin writes a message; every rep gets it as a pop-up the next time they open
+# PSS Connect, and dismisses it with "Got it". Stopping a message hides it from reps
+# who haven't seen it yet.
+
+def announcement_public(row):
+    return {"id": row["id"], "message": row["message"], "created_at": row["created_at"],
+            "created_by": row["created_by"], "active": bool(row["active"])}
+
+
+@app.get("/api/announcements/unread")
+def unread_announcements():
+    rep = current_rep()
+    if not rep:
+        return jsonify({"announcements": []})
+    rows = get_db().execute(
+        "SELECT * FROM announcements WHERE active = 1 AND id NOT IN "
+        "(SELECT announcement_id FROM announcement_reads WHERE rep_id = ?) ORDER BY id", (rep["id"],)).fetchall()
+    return jsonify({"announcements": [announcement_public(r) for r in rows]})
+
+
+@app.post("/api/announcements/<int:announcement_id>/read")
+def read_announcement(announcement_id):
+    rep = current_rep()
+    if not rep:
+        return bad("Sign in first", 403)
+    db = get_db()
+    if not db.execute("SELECT id FROM announcements WHERE id = ?", (announcement_id,)).fetchone():
+        return bad("Not found", 404)
+    if not db.execute("SELECT 1 AS x FROM announcement_reads WHERE announcement_id = ? AND rep_id = ?",
+                      (announcement_id, rep["id"])).fetchone():
+        db.execute("INSERT INTO announcement_reads (announcement_id, rep_id, read_at) VALUES (?, ?, ?)",
+                   (announcement_id, rep["id"], now()))
+        db.commit()
+    return jsonify({"ok": True})
+
+
+def announcements_admin(db):
+    reps = {r["id"]: r for r in db.execute("SELECT id, name, active FROM reps").fetchall()}
+    reads = {}
+    for r in db.execute("SELECT announcement_id, rep_id FROM announcement_reads").fetchall():
+        reads.setdefault(r["announcement_id"], []).append(r["rep_id"])
+    out = []
+    for row in db.execute("SELECT * FROM announcements ORDER BY id DESC LIMIT 50").fetchall():
+        read_ids = set(reads.get(row["id"], []))
+        out.append({**announcement_public(row),
+                    "read_by": sorted(reps[i]["name"] for i in read_ids if i in reps),
+                    "not_read": sorted(r["name"] for i, r in reps.items() if r["active"] and i not in read_ids)})
+    return {"announcements": out}
+
+
+@app.get("/api/announcements")
+@admin_only
+def list_announcements():
+    return jsonify(announcements_admin(get_db()))
+
+
+@app.post("/api/announcements")
+@admin_only
+def create_announcement():
+    data = request.get_json(silent=True) or {}
+    message = str(data.get("message") or "").strip()
+    if not message:
+        return bad("Write a message first")
+    if len(message) > 2000:
+        return bad("Keep the message under 2,000 characters")
+    db = get_db()
+    db.insert("announcements", {"message": message, "created_at": now(), "created_by": actor()})
+    log(db, "message", "Sent a message to reps")
+    db.commit()
+    return jsonify(announcements_admin(db)), 201
+
+
+@app.post("/api/announcements/<int:announcement_id>/stop")
+@admin_only
+def stop_announcement(announcement_id):
+    db = get_db()
+    db.execute("UPDATE announcements SET active = 0 WHERE id = ?", (announcement_id,))
+    db.commit()
+    return jsonify(announcements_admin(db))
 
 
 @app.post("/api/transfers/<int:transfer_id>/<action>")
@@ -1872,7 +2041,7 @@ def import_csv():
         values["tags"] = ""  # tags belong to companies
         if company_id and row.get("tags"):
             company_tags = db.execute("SELECT tags FROM nodes WHERE id = ?", (company_id,)).fetchone()["tags"]
-            merged = join_tags(company_tags.split(",") + row["tags"].split(","), keep=company_tags.split(","))
+            merged = join_tags(db, company_tags.split(",") + row["tags"].split(","), keep=company_tags.split(","))
             db.execute("UPDATE nodes SET tags = ? WHERE id = ?", (merged, company_id))
         values.update(type="person", company_id=company_id, created_at=ts, updated_at=ts, updated_by=who)
         if not admin:
