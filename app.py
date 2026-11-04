@@ -879,10 +879,19 @@ def update_node(node_id):
         return bad(err)
     if values.get("company_id") == node_id:
         return bad("A node can't belong to itself")
-    if "owner_rep" in values and not is_admin():
+    # Ownership only changes in Wingmate (the sync keeps synced records in step); in PSS
+    # Connect nobody can reassign a record, not even an admin.
+    if "owner_rep" in values:
         if values["owner_rep"] != existing["owner_rep"]:
-            return bad("Only an admin can change who a lead is assigned to.", 403)
+            return bad(OWNER_LOCKED, 403)
         del values["owner_rep"]
+    # A Wingmate record's details come from Wingmate; here only what Wingmate doesn't
+    # have can change (the About summary, plus tags, notes and connections elsewhere).
+    if existing["wingmate_id"]:
+        changed = [f for f in WINGMATE_FIELDS if f in values and (values[f] or None) != (existing[f] or None)]
+        if changed:
+            return bad(wingmate_locked(changed), 403)
+        values = {k: v for k, v in values.items() if k not in WINGMATE_FIELDS}
     identity = ("name", "company_id", "email")
     if not data.get("allow_duplicate") and any(k in values and values[k] != existing[k] for k in identity):
         merged = {**existing, **values}
@@ -898,6 +907,20 @@ def update_node(node_id):
         bump_version(db)
         db.commit()
     return jsonify(node_row(db, node_id))
+
+
+OWNER_LOCKED = ("Who a lead belongs to is set in Wingmate. Reassign it there; "
+                "it can't be changed in PSS Connect.")
+# What a Wingmate record gets from Wingmate, so it's changed there, not here.
+WINGMATE_FIELDS = ("name", "title", "email", "phone", "location", "stage", "company_id")
+FIELD_LABELS = {"name": "name", "title": "title", "email": "email", "phone": "phone",
+                "location": "location", "stage": "stage", "company_id": "company"}
+
+
+def wingmate_locked(fields):
+    names = [FIELD_LABELS.get(f, f) for f in fields]
+    what = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return f"This record comes from Wingmate, so its {what} can only be changed in Wingmate. The next sync updates it here."
 
 
 @app.delete("/api/nodes/<int:node_id>")
@@ -1046,6 +1069,8 @@ def move_contact(node_id):
         return bad("Not found", 404)
     if not can_edit_node(person):
         return not_yours("contacts assigned to you")
+    if person["wingmate_id"]:
+        return bad(wingmate_locked(["company_id"]), 403)
     data = request.get_json(silent=True) or {}
     company_id, name = to_int(data.get("company_id")), str(data.get("company_name") or "").strip()[:300]
     created = False
@@ -1146,37 +1171,7 @@ def can_decide(transfer):
 
 @app.post("/api/nodes/<int:node_id>/transfer-request")
 def request_transfer(node_id):
-    db = get_db()
-    node = node_row(db, node_id)
-    if not node:
-        return bad("Not found", 404)
-    me = own_name()
-    if not me:
-        return bad("Sign in as a rep to request a lead", 403)
-    if node["owner_rep"] == me:
-        return bad("This lead is already yours")
-    pending = db.execute("SELECT id FROM transfer_requests WHERE node_id = ? AND to_rep = ? AND status = 'pending'",
-                         (node_id, me)).fetchone()
-    if pending:
-        return bad("You've already asked for this lead")
-    reason = str((request.get_json(silent=True) or {}).get("reason") or "").strip()[:1000]
-    transfer_id = db.insert("transfer_requests", {"node_id": node_id, "from_rep": node["owner_rep"], "to_rep": me,
-                                                  "reason": reason, "status": "pending", "created_at": now()})
-    owner = node["owner_rep"] or "an admin (unassigned)"
-    log(db, "transfer", f"Requested {node['name']} from {owner}")
-    bump_version(db)
-    db.commit()
-    return jsonify(transfer_row(db, transfer_id)), 201
-
-
-# ---------- messages to reps ----------
-# An admin writes a message; every rep gets it as a pop-up the next time they open
-# PSS Connect, and dismisses it with "Got it". Stopping a message hides it from reps
-# who haven't seen it yet.
-
-def announcement_public(row):
-    return {"id": row["id"], "message": row["message"], "created_at": row["created_at"],
-            "created_by": row["created_by"], "active": bool(row["active"])}
+    return bad(OWNER_LOCKED + " Ask your admin to reassign it in Wingmate.", 403)
 
 
 @app.get("/api/announcements/unread")
@@ -1272,19 +1267,7 @@ def decide_transfer(transfer_id, action):
         if node["owner_rep"] != t["from_rep"]:
             status, summary = "cancelled", f"Request for {node['name']} closed: the lead changed hands meanwhile"
         elif action == "approve":
-            status = "approved"
-            db.execute("UPDATE nodes SET owner_rep = ?, updated_at = ?, updated_by = ? WHERE id = ?",
-                       (t["to_rep"], now(), actor(), node["id"]))
-            moved = 0
-            if node["type"] == "company" and t["from_rep"]:
-                cur = db.execute("UPDATE nodes SET owner_rep = ? WHERE company_id = ? AND owner_rep = ?",
-                                 (t["to_rep"], node["id"], t["from_rep"]))
-                moved = max(cur.rowcount or 0, 0)
-            extra = f" with {moved} contact{'s' if moved != 1 else ''}" if moved else ""
-            summary = f"Transferred {node['name']}{extra} to {t['to_rep']}"
-            # Other pending requests for the same lead are now moot.
-            db.execute("UPDATE transfer_requests SET status = 'cancelled', decided_at = ?, decided_by = ? "
-                       "WHERE node_id = ? AND status = 'pending' AND id != ?", (now(), actor(), node["id"], t["id"]))
+            return bad(OWNER_LOCKED + " Decline this request, and reassign the lead in Wingmate if it should move.", 403)
         else:
             status, summary = "declined", f"Declined {t['to_rep']}'s request for {node['name']}"
     db.execute("UPDATE transfer_requests SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",

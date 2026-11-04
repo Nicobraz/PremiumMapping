@@ -1468,7 +1468,7 @@ function actionsHtml(n) {
     btns.push('<button class="btn btn-sm btn-primary" data-act="add-person-here">+ Add person</button>');
     if (state.me || state.isAdmin) btns.push('<button class="btn btn-sm" data-act="add-existing" title="Put a contact who\'s already in PSS Connect at this company">+ Add existing contact</button>');
   }
-  if (n.type === 'person' && canEditNode(n)) {
+  if (n.type === 'person' && canEditNode(n) && !n.wingmate_id) {  // a Wingmate contact's company is set in Wingmate
     btns.push(`<button class="btn btn-sm" data-act="move-company">${n.company_id != null ? 'Change company' : 'Add to a company'}</button>`);
   }
   if (n.email) btns.push(`<a class="btn btn-sm" href="mailto:${esc(n.email)}">Email</a>`);
@@ -1497,8 +1497,6 @@ function actionsHtml(n) {
   const mine = myTransferRequest(n.id);
   if (mine) {
     btns.push(`<button class="btn btn-sm btn-pending" data-act="cancel-transfer" data-transfer="${mine.id}" title="Cancel your request">⏳ Transfer requested · Cancel</button>`);
-  } else if (state.me && !canEditNode(n) && n.owner_rep !== myName()) {
-    btns.push('<button class="btn btn-sm" data-act="request-transfer" title="Ask the owner (or an admin) to give you this lead">Request transfer</button>');
   }
   return `${offMap}<div class="card-actions">${btns.join('')}</div>${cardFlowsHtml(n)}${picker}${transferBannerHtml(n)}${viewOnly}`;
 }
@@ -1669,7 +1667,7 @@ function addExistingHtml(n) {
 
 function addExistingListHtml(n) {
   const words = state.addExistingQuery.toLowerCase().split(/\s+/).filter(Boolean);
-  const pool = [...state.nodes.values()].filter((p) => p.type === 'person' && p.company_id !== n.id && canEditNode(p));
+  const pool = [...state.nodes.values()].filter((p) => p.type === 'person' && p.company_id !== n.id && canEditNode(p) && !p.wingmate_id);
   const matches = pool.filter((p) => {
     const hay = [p.name, p.title, p.email, companyOf(p)?.name].join(' ').toLowerCase();
     return words.every((w) => hay.includes(w));
@@ -1859,17 +1857,23 @@ function showDuplicateWarning(form, err, isNew) {
 
 // ----- edit forms -----
 
+// A Wingmate record's details come from Wingmate and are read-only here; only the About
+// summary can change (tags, notes and connections are on the card).
+const WINGMATE_FIELDS = ['name', 'title', 'email', 'phone', 'location', 'stage'];
+
 function nodeFormHtml(n, isNew) {
   const companies = [...state.nodes.values()].filter((c) => c.type === 'company').sort(byName);
+  const locked = !isNew && !!n.wingmate_id;
   const field = (name, label, attrs = '') =>
-    `<label>${label}<input name="${name}" value="${esc(n[name])}" ${attrs}></label>`;
+    `<label>${label}<input name="${name}" value="${esc(n[name])}" ${locked && WINGMATE_FIELDS.includes(name) ? 'readonly class="locked"' : attrs}></label>`;
   const person = n.type === 'person';
   return `<form class="form" data-form="node">
+    ${locked ? '<p class="wingmate-lock">From Wingmate: name, contact details, location, stage, company and owner are changed in Wingmate, and the next sync updates them here. You can edit the About summary.</p>' : ''}
     ${field('name', 'Name', `required maxlength="300" autocomplete="off" placeholder="${person ? 'Jane Smith' : 'Acme Corp'}"`)}
     <div class="dup-hint" data-dup-hint role="status" hidden></div>
     ${person ? field('title', 'Title / role', 'maxlength="300" placeholder="VP of Operations"') : ''}
-    ${person ? field('stage', `Pipeline stage${n.wingmate_id ? ' <small>synced from Wingmate; a change there updates it</small>' : ''}`, 'list="stage-list" maxlength="60" autocomplete="off" placeholder="e.g. Meeting Set"') : ''}
-    ${person ? `<label>Company<select name="company_id">
+    ${person ? field('stage', 'Pipeline stage', 'list="stage-list" maxlength="60" autocomplete="off" placeholder="e.g. Meeting Set"') : ''}
+    ${person ? `<label>Company<select name="company_id" ${locked ? 'disabled class="locked"' : ''}>
         <option value="">None</option>
         ${companies.map((c) => `<option value="${c.id}" ${c.id === n.company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
       </select></label>` : ''}
@@ -1889,21 +1893,21 @@ function nodeFormHtml(n, isNew) {
   </form>`;
 }
 
-// Reps can't reassign leads: new ones go to whoever is "You", and only an admin
-// can change the owner afterwards (the server enforces this too).
+// Ownership is set in Wingmate: nobody reassigns a record in PSS Connect, not even an
+// admin (the server enforces this too). A new record goes to the rep adding it (an admin
+// adding one picks the owner); a Wingmate record follows its lead's owner in Wingmate.
 // Wingmate is the source of truth for owners: on a synced record the owner follows the
 // Wingmate lead's owner, so it's changed there rather than here.
 function ownerFieldHtml(current, isNew, fromWingmate) {
-  if (fromWingmate) {
+  if (!isNew) {
     return `<div class="field"><span>Owner rep</span>
-      <div class="readonly">${current ? esc(current) : 'Unassigned'}<small>Set by the lead's owner in Wingmate. Reassign it there; the next sync updates it here.</small></div></div>`;
+      <div class="readonly">${current ? esc(current) : 'Unassigned'}<small>${fromWingmate
+        ? 'Set by the lead\'s owner in Wingmate. Reassign it there; the next sync updates it here.'
+        : 'Ownership changes only in Wingmate, so this stays with whoever added it.'}</small></div></div>`;
   }
   if (!state.isAdmin) {
-    const owner = isNew
-      ? (myName() ? `${esc(myName())} (you)` : 'You (pick your name at the top)')
-      : (current ? esc(current) : 'Unassigned');
     return `<div class="field"><span>Owner rep</span>
-      <div class="readonly">${owner}<small>${isNew ? 'New leads are assigned to you' : 'Only an admin can reassign'}</small></div></div>`;
+      <div class="readonly">${myName() ? `${esc(myName())} (you)` : 'You (pick your name at the top)'}<small>New leads are assigned to you</small></div></div>`;
   }
   const reps = activeReps().map((r) => r.name);
   if (!reps.length) {
@@ -2015,7 +2019,6 @@ function transferBannerHtml(n) {
       <div><b>${esc(t.to_rep)}</b> asked for this lead${n.type === 'company' && t.from_rep ? ` (and ${esc(t.from_rep)}'s contacts here)` : ''}.
         ${t.reason ? `<span class="muted">“${esc(t.reason)}”</span>` : ''}</div>
       <div class="row-btns">
-        <button type="button" class="btn btn-sm btn-primary" data-act="approve-transfer" data-transfer="${t.id}">Approve</button>
         <button type="button" class="btn btn-sm" data-act="decline-transfer" data-transfer="${t.id}">Decline</button>
       </div>
     </div>`).join('');
@@ -2060,7 +2063,6 @@ function openRequestsPanel(keepScroll) {
             <span>${esc(t.to_rep)} asked ${when(t.created_at)}${t.from_rep ? ` · now ${esc(t.from_rep)}'s` : ' · unassigned'}</span>
             ${t.reason ? `<span class="request-reason">“${esc(t.reason)}”</span>` : ''}</span>
           <span class="row-btns">
-            <button type="button" class="btn btn-sm btn-primary" data-act="approve-transfer" data-transfer="${t.id}">Approve</button>
             <button type="button" class="btn btn-sm" data-act="decline-transfer" data-transfer="${t.id}">Decline</button>
           </span></li>`).join('')}</ul>` : '<p class="muted">Nothing to decide.</p>'}
     </div>
@@ -2070,7 +2072,7 @@ function openRequestsPanel(keepScroll) {
           <span class="who"><b data-goto="${t.node_id}" class="request-lead">${esc(name(t))}</b>
             <span>${STATUS[t.status] || t.status} · asked ${when(t.created_at)}${t.from_rep ? ` from ${esc(t.from_rep)}` : ''}</span></span>
           ${t.status === 'pending' ? `<button type="button" class="btn btn-sm btn-ghost" data-act="cancel-transfer" data-transfer="${t.id}">Cancel</button>` : ''}
-        </li>`).join('')}</ul>` : '<p class="muted">To ask for a lead that belongs to someone else, open it and tap <b>Request transfer</b>.</p>'}
+        </li>`).join('')}</ul>` : '<p class="muted">Leads are reassigned in Wingmate, so there are no new requests here. Older requests can be declined or cancelled.</p>'}
     </div>` : ''}`);
   if (keepScroll) panel.scrollTop = scroll;
 }

@@ -53,7 +53,11 @@ companies), connections between records, and notes. You are working as the signe
   bulk_add_contacts with confirm=false first, show the rep the preview, and call it again with
   the same rows and confirm=true only after they agree.
 - Reps can edit only records assigned to them. On anyone's record they can still add notes,
-  company tags, connections and the high-priority flag, or request the lead (request_lead_transfer).
+  company tags, connections and the high-priority flag.
+- Who a record belongs to is set in Wingmate and can't be changed here, not even by an admin:
+  to move a lead, reassign it in Wingmate. Records that came from Wingmate also get their name,
+  title, email, phone, location, stage and company from Wingmate, so change those there; here
+  only their About summary, tags, notes, connections and the high-priority flag can change.
 - Nothing can be deleted through this connector; tell the rep to do that in the PSS Connect app.
 - Wingmate (the team's field-sales app) syncs into PSS Connect every 15 minutes. The Wingmate
   tools read it live and are read-only.
@@ -840,8 +844,6 @@ def tool_update(args):
                           ("location", "location"), ("stage", "stage"), ("about", "notes")):
         if args.get(field) is not None:
             body[column] = args[field]
-    if args.get("owner") is not None:
-        body["owner_rep"] = resolve_rep(db, args["owner"])
     if args.get("allow_duplicate"):
         body["allow_duplicate"] = True
     move = None
@@ -917,19 +919,6 @@ def tool_priority(args):
     return {"ok": True, "contact": data["name"], "high_priority": bool(data["priority"])}
 
 
-def tool_transfer(args):
-    node_id = core.to_int(args.get("id"))
-    data = api_ok("POST", f"/api/nodes/{node_id}/transfer-request", {"reason": args.get("reason") or ""})
-    owner = data["from_rep"] or "an admin"
-    return {"ok": True, "message": f"Asked {owner} for {core.node_name(core.get_db(), node_id)}. "
-                                   f"They'll see it under Requests in PSS Connect."}
-
-
-# ---------- bulk add ----------
-
-BULK_MAX = 500
-
-
 def plan_bulk(db, rows):
     rep = me()
     nodes = load_map(db)
@@ -982,6 +971,11 @@ def plan_bulk(db, rows):
             entry["new_company"] = True
         plan.append({**entry, "action": "add", "owner": owner or "unassigned", "_row": row, "_ckey": ckey})
     return plan, companies, new_companies
+
+
+# ---------- bulk add ----------
+
+BULK_MAX = 500
 
 
 def tool_bulk(args):
@@ -1257,14 +1251,14 @@ TOOLS = [
              "high_priority": {"type": "boolean"}, "owner": OWNER, "allow_duplicate": {"type": "boolean"}},
             ["name"])),
     ("update_record", "Edit a record", WRITE, tool_update,
-     "Change fields on a company or contact the rep owns (admins: any record, and the owner). "
-     "Only the fields given change. For tags use update_company_tags; for dated updates use add_note.",
+     "Change fields on a company or contact the rep owns (admins: any record). Only the fields given change. "
+     "Records from Wingmate: only about and on_map can change; the rest is changed in Wingmate. "
+     "The owner can't be changed here (it's set in Wingmate). For tags use update_company_tags; for dated updates use add_note.",
      schema({"id": ID, "name": S, **CONTACT_FIELDS,
              "company": {"type": "string", "description": "Move a contact to this company (e.g. they changed jobs). "
                                                          "An existing company with that name is used, otherwise it's added. "
                                                          "'none' takes them off their company. A note records the move."},
              "company_id": {"type": "integer"},
-             "owner": {"type": "string", "description": "Admins only: reassign to this rep, or 'unassigned'."},
              "on_map": {"type": "boolean", "description": "Put the record on the map (true) or keep it saved but off "
                                                           "the map (false). Anyone can. A company takes its contacts with it."},
              "allow_duplicate": {"type": "boolean"}}, ["id"])),
@@ -1284,9 +1278,6 @@ TOOLS = [
     ("set_high_priority", "Flag high priority", WRITE_SAME, tool_priority,
      "Flag (or unflag) a contact as high priority. Anyone can.",
      schema({"id": ID, "high_priority": {"type": "boolean", "default": True}}, ["id"])),
-    ("request_lead_transfer", "Request a lead", WRITE, tool_transfer,
-     "Ask for a company or contact that belongs to another rep (or is unassigned). The owner or an admin "
-     "approves it in PSS Connect.", schema({"id": ID, "reason": S}, ["id"])),
     ("bulk_add_contacts", "Add many contacts", WRITE, tool_bulk,
      "Add up to 500 contacts at once (from a pasted list, spreadsheet, CSV or business cards). Companies are "
      "matched by name or added. Duplicates already in PSS Connect are skipped. ALWAYS call with confirm=false "

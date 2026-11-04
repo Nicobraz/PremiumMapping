@@ -574,6 +574,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 10px 4px 4px !important; font-size: 11.5px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .04em; color: var(--muted); cursor: default; pointer-events: none; border: 0 !important;
 }
+.wingmate-lock { margin: 0 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: 12.5px; }
+.form input.locked, .form select.locked { background: var(--surface-2); color: var(--muted); cursor: not-allowed; }
 .tag-unknown { background: var(--surface-2); color: var(--muted); font-style: italic; }
 .map-tags span.unknown { opacity: .7; font-style: italic; }
 .tag-create { border-style: solid; color: var(--accent); }
