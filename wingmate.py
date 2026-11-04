@@ -4,8 +4,9 @@ updates on a lead and stage moves; see flows.py).
 
 Wingmate leads become companies, their contacts become people, and lead
 comments become notes. On later runs only name, location, email and phone
-are refreshed from Wingmate; PSS-side tags, notes, connections, map positions
-and an owner that's already set are never touched, and nothing is deleted.
+are refreshed from Wingmate, and the owner rep always follows the Wingmate lead's
+owner (Wingmate is the source of truth for who a lead belongs to). PSS-side tags,
+notes, connections and map positions are never touched, and nothing is deleted.
 """
 
 import json
@@ -308,6 +309,15 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         name = text(user.get("full_name") or user.get("name")).lower()
         return rep_by_email.get(email) or rep_by_name.get(name) or ""
 
+    def owner_of(lead):
+        """The PSS rep who owns a lead in Wingmate: their name, '' when the lead has no
+        owner in Wingmate, or None when its owner isn't a PSS rep (then the owner here is
+        left as it is, so a rep missing from the team list doesn't wipe owners)."""
+        user_id = first_id(lead.get("owner_ids")) or first_id(lead.get("worker_id"))
+        if not user_id:
+            return ""
+        return rep_for(user_id) or None
+
     def author_for(comment):
         """The rep's PSS name when the commenter is a known rep, else their Wingmate name."""
         user = comment.get("user") if isinstance(comment.get("user"), dict) else {}
@@ -399,7 +409,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         if wm_id in dismissed:  # deleted here on purpose
             continue
         location, full_address = address_parts(lead)
-        owner = rep_for(first_id(lead.get("owner_ids")) or first_id(lead.get("worker_id")))
+        owner = owner_of(lead)
         lead_owner[lead_id] = owner
         lead_stage[lead_id] = text(lead.get("status_string"))
         seen = text(lead.get("actioned_at") or lead.get("created_at"))
@@ -413,7 +423,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             candidate = companies_by_name.get(norm_name(name, True))
             if candidate is not None and not candidate.get("wingmate_id"):
                 counts["companies_linked"] += 1
-                update(candidate, {"wingmate_id": wm_id, **({"owner_rep": owner} if owner and not candidate["owner_rep"] else {})})
+                update(candidate, {"wingmate_id": wm_id, **({"owner_rep": owner} if owner is not None else {})})
                 sync_fields(candidate, {"name": name, "location": location}, linking=True)
                 node = by_wm[wm_id] = candidate
             elif candidate is not None:
@@ -427,7 +437,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 about = "\n".join(p for p in (f"Address: {full_address}" if full_address else "",
                                               text(lead.get("description"), 5000)) if p)
                 values = {"type": "company", "name": name, "location": location, "notes": about,
-                          "owner_rep": owner, "wingmate_id": wm_id, "wingmate_seen": "",
+                          "owner_rep": owner or "", "wingmate_id": wm_id, "wingmate_seen": "",
                           "wingmate_sync": json.dumps({"name": name, "location": location,
                                                        **({"off_map": 1} if held else {})}, sort_keys=True),
                           "off_map": 1 if held else 0,
@@ -439,8 +449,10 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         primary = node.get("wingmate_id") == wm_id
         if not fresh:
             changed = sync_fields(node, {"name": name, "location": location}) if primary else False
-            if owner and not node["owner_rep"]:
+            if primary and owner is not None:  # Wingmate decides who the lead belongs to
                 changed = update(node, {"owner_rep": owner}) or changed
+            elif not primary and owner and not node["owner_rep"]:
+                changed = update(node, {"owner_rep": owner}) or changed  # shared company: fill a blank only
             counts["companies_updated"] += changed
         reached_map(node, held)
         lead_nodes[lead_id] = node
@@ -477,7 +489,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             node = node or people_by_key.get((norm_name(name), company["id"]))
             if node is not None and not node.get("wingmate_id"):
                 counts["people_linked"] += 1
-                update(node, {"wingmate_id": wm_id})
+                update(node, {"wingmate_id": wm_id, **({"owner_rep": lead_owner[lead_id]} if lead_owner.get(lead_id) is not None else {})})
                 sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage}, linking=True)
             elif node is not None and node["id"] > 0:
                 # Already here from another lead (e.g. moved from a cold outreach pipeline
@@ -492,7 +504,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 values = {"type": "person", "name": name, "company_id": company["id"], "email": email,
                           "phone": phone, "title": title, "notes": custom_value(contact, "note", "comment"),
                           # Each contact belongs to the rep whose lead it came from.
-                          "owner_rep": lead_owner.get(lead_id) or company.get("owner_rep", ""),
+                          "owner_rep": lead_owner.get(lead_id) if lead_owner.get(lead_id) is not None else company.get("owner_rep", ""),
                           "wingmate_id": wm_id, "wingmate_seen": "",
                           "wingmate_sync": json.dumps({"name": name, "email": email, "phone": phone}, sort_keys=True),
                           "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
@@ -509,7 +521,10 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 counts["people_added"] += 1
             by_wm[wm_id] = node
         else:
-            counts["people_updated"] += sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage})
+            changed = sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage})
+            if lead_owner.get(lead_id) is not None:  # each contact belongs to its lead's Wingmate owner
+                changed = update(node, {"owner_rep": lead_owner[lead_id]}) or changed
+            counts["people_updated"] += changed
         reached_map(node, held)
         lead_contacts.setdefault(lead_id, []).append((bool(contact.get("primary_contact")), node))
 

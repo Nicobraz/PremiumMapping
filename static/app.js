@@ -1875,7 +1875,7 @@ function nodeFormHtml(n, isNew) {
       </select></label>` : ''}
     ${person ? `<div class="row">${field('email', 'Email', 'type="email" maxlength="300"')}${field('phone', 'Phone', 'type="tel" maxlength="300"')}</div>` : ''}
     ${field('location', 'Location', 'maxlength="300" placeholder="City, State"')}
-    ${ownerFieldHtml(n.owner_rep, isNew)}
+    ${ownerFieldHtml(n.owner_rep, isNew, !!n.wingmate_id)}
     ${!person && isNew ? field('tags', 'Tags <small>comma separated; add more later on the card</small>', 'maxlength="300" placeholder="target, gym"') : ''}
     <label>About <small>a short summary; use Notes on the card for running updates</small>
       <textarea name="notes" rows="3" maxlength="5000" placeholder="${person ? 'Background, what they care about…' : 'What they do, size, how we sell to them…'}">${esc(n.notes)}</textarea></label>
@@ -1891,7 +1891,13 @@ function nodeFormHtml(n, isNew) {
 
 // Reps can't reassign leads: new ones go to whoever is "You", and only an admin
 // can change the owner afterwards (the server enforces this too).
-function ownerFieldHtml(current, isNew) {
+// Wingmate is the source of truth for owners: on a synced record the owner follows the
+// Wingmate lead's owner, so it's changed there rather than here.
+function ownerFieldHtml(current, isNew, fromWingmate) {
+  if (fromWingmate) {
+    return `<div class="field"><span>Owner rep</span>
+      <div class="readonly">${current ? esc(current) : 'Unassigned'}<small>Set by the lead's owner in Wingmate. Reassign it there; the next sync updates it here.</small></div></div>`;
+  }
   if (!state.isAdmin) {
     const owner = isNew
       ? (myName() ? `${esc(myName())} (you)` : 'You (pick your name at the top)')
@@ -2017,7 +2023,8 @@ function transferBannerHtml(n) {
 
 async function decideTransfer(id, action) {
   const t = state.transfers.find((x) => x.id === id);
-  if (action === 'approve' && t && !confirm(`Give ${state.nodes.get(t.node_id)?.name || 'this lead'} to ${t.to_rep}?`)) return;
+  const lead = t && state.nodes.get(t.node_id);
+  if (action === 'approve' && t && !confirm(`Give ${lead?.name || 'this lead'} to ${t.to_rep}?${lead?.wingmate_id ? `\n\nThis lead comes from Wingmate, which decides its owner: also reassign it to ${t.to_rep} in Wingmate, or the next sync gives it back.` : ''}`)) return;
   try {
     const r = await api('POST', `/api/transfers/${id}/${action}`);
     await sync();
