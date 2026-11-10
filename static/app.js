@@ -1890,6 +1890,112 @@ function updateDupHint(form) {
     + (similar.length ? `<span class="muted">Similar:</span>${similar.map(dupItemHtml).join('')}` : '');
 }
 
+// ----- suggestions while adding -----
+// Typing a new record's name, email or phone drops down matching records already in
+// PSS Connect (everyone's, not just this map), so a rep opens the existing one instead
+// of adding a duplicate.
+const SUGGEST_FIELDS = ['name', 'email', 'phone'];
+const SUGGEST_MAX = 6;
+
+const digitsOf = (v) => String(v || '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+
+function suggestMatches(type, field, value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (field === 'name') {
+    const q = normName(raw, type === 'company');
+    const words = q.split(' ').filter(Boolean);
+    if (q.length < 2) return [];
+    const scored = [];
+    for (const n of state.nodes.values()) {
+      if (n.type !== type) continue;
+      const name = normName(n.name, type === 'company');
+      const nameWords = name.split(' ');
+      let score = 0;
+      if (name === q) score = 4;
+      else if (name.startsWith(q)) score = 3;
+      else if (words.every((w) => nameWords.some((nw) => nw.startsWith(w)))) score = 2;
+      else if (q.length >= 3 && name.includes(q)) score = 1;
+      if (score) scored.push([score, n]);
+    }
+    return scored.sort((a, b) => (b[0] - a[0]) || byName(a[1], b[1])).map(([, n]) => n);
+  }
+  if (type !== 'person') return [];
+  if (field === 'email') {
+    if (raw.length < 3) return [];
+    return [...state.nodes.values()].filter((n) => n.type === 'person' && n.email && n.email.toLowerCase().includes(raw)).sort(byName);
+  }
+  const d = digitsOf(raw);
+  if (d.length < 4) return [];
+  return [...state.nodes.values()].filter((n) => n.type === 'person' && digitsOf(n.phone).includes(d)).sort(byName);
+}
+
+function closeSuggest(form) {
+  form?.querySelectorAll('.suggest').forEach((box) => box.remove());
+}
+
+function updateSuggest(input) {
+  const form = input.form;
+  closeSuggest(form);
+  const p = state.panel;
+  if (!form || p?.kind !== 'new-node' || !SUGGEST_FIELDS.includes(input.name)) return;
+  const all = suggestMatches(p.type, input.name, input.value);
+  if (!all.length) return;
+  const shown = all.slice(0, SUGGEST_MAX);
+  const box = document.createElement('ul');
+  box.className = 'suggest';
+  box.setAttribute('role', 'listbox');
+  box.innerHTML = `<li class="suggest-head">Already in PSS Connect. Open it instead of adding a duplicate:</li>`
+    + shown.map((n) => {
+      const where = n.type === 'person' ? [n.title, companyOf(n)?.name] : [n.location];
+      const owner = n.owner_rep ? (n.owner_rep === myName() ? 'Yours' : `${n.owner_rep}'s`) : 'Unassigned';
+      const detail = [...where, input.name === 'email' ? n.email : '', input.name === 'phone' ? n.phone : '', owner].filter(Boolean).join(' · ');
+      return `<li class="suggest-item" role="option" data-suggest="${n.id}">${avatar(n, 'avatar-sm')}<span class="who"><b>${esc(n.name)}</b><span>${esc(detail)}</span></span></li>`;
+    }).join('')
+    + (all.length > shown.length ? `<li class="suggest-more">${all.length - shown.length} more. Keep typing to narrow it down.</li>` : '');
+  const host = input.closest('label');
+  host.classList.add('suggest-host');
+  host.append(box);
+}
+
+function moveSuggest(box, step) {
+  const items = [...box.querySelectorAll('.suggest-item')];
+  const at = items.findIndex((li) => li.classList.contains('active'));
+  items[at]?.classList.remove('active');
+  const next = at < 0 ? (step > 0 ? 0 : items.length - 1) : (at + step + items.length) % items.length;
+  items[next]?.classList.add('active');
+}
+
+function openSuggested(id) {
+  state.panelDirty = false;
+  goToNode(id);
+  openNodePanel(id);
+}
+
+panel.addEventListener('mousedown', (evt) => {
+  const li = evt.target.closest('[data-suggest]');
+  if (!li) return;
+  evt.preventDefault();
+  openSuggested(Number(li.dataset.suggest));
+});
+panel.addEventListener('focusout', (evt) => {
+  if (SUGGEST_FIELDS.includes(evt.target.name)) setTimeout(() => {
+    if (!evt.target.closest('label')?.contains(document.activeElement)) evt.target.closest('label')?.querySelector('.suggest')?.remove();
+  }, 120);
+});
+panel.addEventListener('focusin', (evt) => {
+  if (SUGGEST_FIELDS.includes(evt.target.name) && evt.target.form?.dataset.form === 'node') updateSuggest(evt.target);
+});
+panel.addEventListener('keydown', (evt) => {
+  const box = evt.target.closest?.('label')?.querySelector('.suggest');
+  if (!box || !SUGGEST_FIELDS.includes(evt.target.name)) return;
+  if (evt.key === 'ArrowDown' || evt.key === 'ArrowUp') { evt.preventDefault(); moveSuggest(box, evt.key === 'ArrowDown' ? 1 : -1); }
+  else if (evt.key === 'Escape') { evt.preventDefault(); evt.stopPropagation(); box.remove(); }
+  else if (evt.key === 'Enter') {
+    const active = box.querySelector('.suggest-item.active');
+    if (active) { evt.preventDefault(); openSuggested(Number(active.dataset.suggest)); }
+  }
+});
+
 function showDuplicateWarning(form, err, isNew) {
   form.querySelector('.dup-warning')?.remove();
   const box = document.createElement('div');
@@ -2358,6 +2464,7 @@ panel.addEventListener('input', (evt) => {
   state.panelDirty = true;
   const nodeForm = evt.target.closest('[data-form="node"]');
   if (nodeForm && (evt.target.name === 'name' || evt.target.name === 'email')) updateDupHint(nodeForm);
+  if (nodeForm && SUGGEST_FIELDS.includes(evt.target.name)) updateSuggest(evt.target);
 });
 
 // Changing the relationship type on a new connection updates the arrow preview.
