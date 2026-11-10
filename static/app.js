@@ -341,6 +341,11 @@ function graphStyle() {
       'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(bend)', 'control-point-weights': 0.5,
     } },
     { selector: 'edge.hover, edge:selected', style: { 'label': 'data(label)', 'opacity': 1, 'z-index': 10 } },
+    // In a rep's view, a shared company and other reps' contacts there are drawn gray.
+    { selector: 'node.not-mine', style: {
+      'background-color': cssVar('--cy-not-mine'), 'border-width': 2, 'border-style': 'dashed',
+      'border-color': cssVar('--cy-not-mine-border'), 'opacity': 0.8,
+    } },
     { selector: 'node[priority = 1]', style: { 'border-width': 4, 'border-color': '#f5b301' } },
     { selector: 'node:selected', style: { 'border-width': 4, 'border-color': accent } },
     { selector: 'node.match', style: { 'border-width': 4, 'border-color': '#f59e0b' } },
@@ -903,10 +908,11 @@ function filterMatches() {
 }
 
 // ---------- team view / rep view ----------
-// Team view is the whole shared map, each company once. A rep's view (My view, or for
-// admins any rep's) shows only what's theirs: the companies and contacts assigned to
-// them (Wingmate's lead owner, or ones they added), plus any company where one of their
-// contacts works. Nothing of other reps' shows there. Reps open in My view.
+// Reps' map is always their own view: the companies and contacts assigned to them
+// (Wingmate's lead owner, or ones they added), plus any company where one of their
+// contacts works. At such a shared company, other reps' contacts show too, drawn gray,
+// as does the company itself when it isn't theirs. Nothing else of other reps' is drawn.
+// Search still finds everyone's records. Team view (the whole map) is for admins.
 
 function viewRep() {
   if (state.view === 'team') return '';
@@ -916,13 +922,19 @@ function viewRep() {
 
 function computeViewSets(rep) {
   const r = rep.trim().toLowerCase();
+  const mine = new Set();
   const visible = new Set();
   for (const n of state.nodes.values()) {
     if (n.owner_rep.trim().toLowerCase() !== r) continue;
+    mine.add(n.id);
     visible.add(n.id);
     if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) visible.add(n.company_id);
   }
-  return { visible };
+  // Everyone's contacts at a company in this view.
+  for (const n of state.nodes.values()) {
+    if (n.type === 'person' && n.company_id != null && visible.has(n.company_id)) visible.add(n.id);
+  }
+  return { mine, visible };
 }
 
 function inView(id) {
@@ -943,9 +955,11 @@ function applyView() {
     cy.nodes().forEach((el) => {
       const id = el.data('nid');
       el.toggleClass('view-hidden', !!v && !v.visible.has(id));
+      el.toggleClass('not-mine', !!v && v.visible.has(id) && !v.mine.has(id));
     });
   });
-  $('#view-select').classList.toggle('active', !!v);
+  $('#view-select').classList.toggle('active', !!v && state.isAdmin);
+  $('#view-key').hidden = !v || ![...v.visible].some((id) => !v.mine.has(id));
   if ((rep || '').toLowerCase() !== (state.viewPosFor || '')) loadViewPositions();
 }
 
@@ -969,8 +983,8 @@ async function loadViewPositions() {
   if (state.viewPosFor !== rep) return;  // switched views meanwhile
   state.viewPos = new Map(Object.entries(positions).map(([id, [x, y]]) => [Number(id), { x, y }]));
   applyViewPositions();
-  if (state.viewSets && !state.viewSets.visible.size) {
-    toast(`Nothing is assigned to ${state.view === 'mine' ? 'you' : viewRep()} yet. Switch to Team view to see everyone's.`);
+  if (state.viewSets && !state.viewSets.mine.size) {
+    toast(`Nothing is assigned to ${state.view === 'mine' ? 'you' : viewRep()} yet.${state.isAdmin ? ' Switch to Team view to see everyone\'s.' : ' Search still finds everyone\'s records.'}`);
   }
 }
 
@@ -1034,8 +1048,10 @@ function refreshViewOptions() {
   const others = state.isAdmin ? activeReps().map((r) => r.name).filter((name) => name !== me) : [];
   if (state.view !== 'team' && state.view !== 'mine' && !others.includes(state.view)) state.view = 'team';
   if (state.view === 'mine' && !me) state.view = 'team';
-  select.innerHTML = '<option value="team">Team view</option>'
-    + (me ? '<option value="mine">My view</option>' : '')
+  if (!state.isAdmin && me) state.view = 'mine';  // reps only see their own map
+  select.disabled = !state.isAdmin && !!me;
+  select.innerHTML = (state.isAdmin || !me ? '<option value="team">Team view</option>' : '')
+    + (me ? `<option value="mine">${state.isAdmin ? 'My view' : 'My clients'}</option>` : '')
     + (others.length ? `<optgroup label="A rep's view">${others.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</optgroup>` : '');
   select.value = state.view;
 }
@@ -1188,7 +1204,7 @@ function updateStats() {
 function searchMatches() {
   const q = $('#search').value.trim().toLowerCase();
   if (!q) return [];
-  return [...state.nodes.values()].filter((n) => inRepView(n.id)).filter((n) =>
+  return [...state.nodes.values()].filter((n) =>
     [n.name, n.title, n.email, n.type === 'company' ? n.tags : '', n.location, n.owner_rep, n.notes].some((v) => String(v || '').toLowerCase().includes(q))
     || (state.noteText.get(n.id) || '').includes(q));
 }
@@ -1198,14 +1214,45 @@ function applySearch() {
   cy.nodes().removeClass('match');
   for (const n of matches) cy.getElementById(`n${n.id}`).addClass('match');
   const q = $('#search').value.trim();
-  const off = matches.filter((n) => !onMap(n.id)).length;
-  $('#search-count').textContent = q ? `${matches.length} found${off ? ` (${off} not on the map)` : ''}` : '';
+  const off = matches.filter((n) => !drawn(n.id)).length;
+  $('#search-count').textContent = q ? `${matches.length} found${off ? ` (${off} not on ${state.viewSets ? 'your' : 'the'} map)` : ''}` : '';
+  renderSearchResults(q ? matches : []);
 }
+
+// Whether a record is drawn on the map being shown.
+const drawn = (id) => inView(id);
+
+// Search covers everyone's records. The list under the box opens any of them, including
+// ones that aren't drawn on this map (other reps' clients).
+function renderSearchResults(matches) {
+  const box = $('#search-results');
+  if (!matches.length || document.activeElement !== $('#search')) { box.hidden = true; box.innerHTML = ''; return; }
+  const shown = [...matches].sort((a, b) => (drawn(b.id) - drawn(a.id)) || byName(a, b)).slice(0, 12);
+  box.innerHTML = shown.map((n) => {
+    const company = n.type === 'person' ? companyOf(n)?.name : '';
+    const detail = [n.type === 'person' ? n.title : 'Company', company, n.owner_rep ? `${n.owner_rep}'s` : 'Unassigned'].filter(Boolean).join(' · ');
+    const note = drawn(n.id) ? '' : ' <span class="off-map-chip">Not on your map</span>';
+    return `<li data-search-goto="${n.id}">${avatar(n, 'avatar-sm')}<span class="who"><b>${esc(n.name)}</b>${note}<span>${esc(detail)}</span></span></li>`;
+  }).join('') + (matches.length > shown.length ? `<li class="muted search-more">${matches.length - shown.length} more. Keep typing to narrow it down.</li>` : '');
+  box.hidden = false;
+}
+
+$('#search').addEventListener('focus', applySearch);
+$('#search').addEventListener('blur', () => setTimeout(() => renderSearchResults([]), 150));
+$('#search-results').addEventListener('mousedown', (evt) => {
+  const li = evt.target.closest('[data-search-goto]');
+  if (!li) return;
+  evt.preventDefault();
+  const id = Number(li.dataset.searchGoto);
+  $('#search').blur();
+  goToNode(id);
+  openNodePanel(id);
+});
 
 $('#search').addEventListener('input', applySearch);
 $('#search').addEventListener('keydown', (evt) => {
   if (evt.key === 'Enter') {
-    const [first] = searchMatches().sort(byName);
+    const [first] = searchMatches().sort((a, b) => (drawn(b.id) - drawn(a.id)) || byName(a, b));
     if (first) { goToNode(first.id); openNodePanel(first.id); }
   } else if (evt.key === 'Escape') {
     evt.target.value = '';
@@ -1215,7 +1262,7 @@ $('#search').addEventListener('keydown', (evt) => {
 
 function goToNode(id) {
   const el = cy.getElementById(`n${id}`);
-  if (el.empty()) return;
+  if (el.empty() || el.hasClass('view-hidden')) return;  // not drawn here: just its card opens
   cy.elements().unselect();
   el.select();
   moveMap({ center: { eles: el }, zoom: Math.max(cy.zoom(), 1) }, 350);
@@ -2240,7 +2287,7 @@ function renderDirectoryList() {
     + (state.dirFilters.length > 1 ? '<button type="button" class="link-btn" data-dir-clear>Clear all</button>' : '');
   // In a rep's view, that rep's records come first and everyone else's follow.
   const v = state.viewSets;
-  const mine = (n) => !!v && v.visible.has(n.id);
+  const mine = (n) => !!v && v.mine.has(n.id);
   const items = dirItems().filter(dirMatches).sort((a, b) => (mine(b) - mine(a)) || byName(a, b));
   const kind = state.dirTab === 'companies' ? ['company', 'companies'] : ['contact', 'contacts'];
   const countLine = `<li class="dir-count muted">${plural(items.length, kind[0], kind[1])}${state.dirFilters.length ? ' match' : ''}${bulkFlowHtml(items.length)}</li>`;

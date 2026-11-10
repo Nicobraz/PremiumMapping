@@ -29,6 +29,7 @@
   <div class="search">
     <input id="search" type="search" placeholder="Search people, companies, tags…" autocomplete="off" aria-label="Search">
     <span id="search-count" class="search-count"></span>
+    <ul id="search-results" class="search-results" hidden></ul>
   </div>
 
   <div class="actions">
@@ -71,6 +72,7 @@
     <select id="view-select" class="view-select" aria-label="Whose map to show">
       <option value="team">Team view</option>
     </select>
+    <span id="view-key" class="view-key" hidden title="A company you share with other reps, and their contacts there"><span class="view-key-dot"></span>Another rep's</span>
     <div id="legend" class="legend" aria-label="Relationship types (click to show or hide)"></div>
   </div>
   <div class="filters">

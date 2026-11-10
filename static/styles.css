@@ -20,6 +20,8 @@
   --cy-label: #1f2937;
   --cy-label-bg: #ffffff;
   --cy-works-at: #c7cdd6;
+  --cy-not-mine: #c3c9d2;
+  --cy-not-mine-border: #8a94a3;
   --radius: 10px;
   color-scheme: light;
 }
@@ -41,6 +43,8 @@
     --cy-label: #e5e7eb;
     --cy-label-bg: #12161b;
     --cy-works-at: #3d4552;
+    --cy-not-mine: #4a525e;
+    --cy-not-mine-border: #7b8594;
     --map-tag-bg: #3a1618;
     --map-tag-ink: #ff9a9c;
     --map-tag-border: #5c2427;
@@ -64,6 +68,8 @@
   --cy-label: #e5e7eb;
   --cy-label-bg: #12161b;
   --cy-works-at: #3d4552;
+  --cy-not-mine: #4a525e;
+  --cy-not-mine-border: #7b8594;
   --map-tag-bg: #3a1618;
   --map-tag-ink: #ff9a9c;
   --map-tag-border: #5c2427;
@@ -100,6 +106,25 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--surface-2);
 }
 .search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; background: var(--surface); }
+.search-results {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 50; margin: 0; padding: 4px;
+  list-style: none; max-height: min(60vh, 460px); overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow);
+}
+.search-results li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.search-results li:hover { background: var(--surface-2); }
+.search-results .who { display: flex; flex-direction: column; min-width: 0; }
+.search-results .who b { font-weight: 600; }
+.search-results .who span:not(.off-map-chip) { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-results .off-map-chip { display: inline-block; font-size: 10.5px; margin-left: 4px; }
+.search-results .search-more { cursor: default; font-size: 12px; }
+.search-results .search-more:hover { background: none; }
+.view-key { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.view-key-dot {
+  width: 12px; height: 12px; border-radius: 50%; background: var(--cy-not-mine);
+  border: 2px dashed var(--cy-not-mine-border); box-sizing: border-box;
+}
+.view-select:disabled { opacity: 1; cursor: default; }
 .search-count {
   position: absolute; right: 34px; top: 50%; transform: translateY(-50%);
   font-size: 11px; color: var(--muted); pointer-events: none;
