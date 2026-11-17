@@ -3010,13 +3010,18 @@ function wingmateSectionHtml() {
   const preview = w.preview && !running
     ? (w.preview.ok ? `<p class="wm-preview">Preview (${plural(w.preview.leads, 'lead', 'leads')}, ${plural(w.preview.contacts, 'contact', 'contacts')} in Wingmate): ${esc(wingmateCounts(w.preview, true))}.</p>`
       : `<p class="wm-result error-text">Preview failed: ${esc(w.preview.error)}</p>`) : '';
-  return `<h3>Wingmate <span class="pill pill-company">Connected</span></h3>
-    <p class="muted">Pipeline <b>${esc(w.campaign_name || w.campaign_id)}</b>. Syncs automatically every ${w.interval_minutes} minutes while the site is awake.</p>
+  return `<h3>Wingmate ${w.paused ? '<span class="pill pill-paused">Paused</span>' : '<span class="pill pill-company">Connected</span>'}</h3>
+    ${w.paused
+      ? '<p class="wm-paused"><b>Syncing is paused.</b> Nothing comes in from Wingmate and nothing is sent to it (flows don\'t update leads) until you resume. Preview still shows what a sync would change.</p>'
+      : `<p class="muted">Pipeline <b>${esc(w.campaign_name || w.campaign_id)}</b>. Syncs automatically every ${w.interval_minutes} minutes while the site is awake.</p>`}
     ${running ? `<p class="wm-result"><span class="spinner"></span> ${running === 'preview' ? 'Building preview…' : 'Syncing with Wingmate…'}</p>` : lastHtml}
     ${preview}
     <div class="row-btns">
+      ${w.paused
+        ? `<button type="button" class="btn btn-sm btn-primary" data-wm-act="resume" ${running ? 'disabled' : ''}>Resume syncing</button>`
+        : '<button type="button" class="btn btn-sm" data-wm-act="pause">Pause</button>'}
       <button type="button" class="btn btn-sm" data-wm-act="preview" ${running ? 'disabled' : ''}>Preview</button>
-      <button type="button" class="btn btn-sm btn-primary" data-wm-act="sync" ${running ? 'disabled' : ''}>Sync now</button>
+      ${w.paused ? '' : `<button type="button" class="btn btn-sm btn-primary" data-wm-act="sync" ${running ? 'disabled' : ''}>Sync now</button>`}
       <button type="button" class="btn btn-sm btn-ghost" data-wm-act="edit">Settings</button>
       <button type="button" class="btn btn-sm btn-danger-ghost" data-wm-act="disconnect">Disconnect</button>
     </div>
@@ -3121,6 +3126,12 @@ async function handleWingmateAction(act) {
       state.wingmateEditing = act === 'edit';
       state.panelDirty = false;
       renderWingmateSection();
+    } else if (act === 'pause' || act === 'resume') {
+      if (act === 'pause' && !confirm('Pause Wingmate? Nothing syncs in either direction until you resume.')) return;
+      state.wingmate = await api('POST', '/api/wingmate/pause', { paused: act === 'pause' });
+      renderWingmateSection();
+      loadWmSync();
+      toast(act === 'pause' ? 'Wingmate syncing paused' : 'Wingmate syncing resumed. It syncs within 15 minutes, or use Sync now.');
     } else if (act === 'disconnect') {
       if (!confirm('Disconnect Wingmate? Companies and people already synced stay on the map.')) return;
       state.wingmate = await api('POST', '/api/wingmate/settings', { disconnect: true });
@@ -3541,7 +3552,10 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
 const wmSync = { connected: false, busy: false };
 
 async function loadWmSync() {
-  try { wmSync.connected = (await api('GET', '/api/wingmate/refresh')).connected; } catch { wmSync.connected = false; }
+  try {
+    const r = await api('GET', '/api/wingmate/refresh');
+    wmSync.connected = r.connected && !r.paused;  // the sync button is hidden while paused
+  } catch { wmSync.connected = false; }
   renderWmSync();
 }
 

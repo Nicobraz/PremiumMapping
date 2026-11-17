@@ -364,6 +364,9 @@ def _init_schema(db):
                (secrets.token_hex(32),))
     db.execute("INSERT INTO settings (key, value) VALUES ('backup_key', ?) ON CONFLICT (key) DO NOTHING",
                (secrets.token_urlsafe(24),))
+    # Wingmate starts out paused (and was paused on the deploy that added pausing, while
+    # the team reorganized Wingmate). An admin resumes it in the Wingmate settings.
+    db.execute("INSERT INTO settings (key, value) VALUES ('wingmate_paused', '1') ON CONFLICT (key) DO NOTHING")
     secret = db.execute("SELECT value FROM settings WHERE key = 'session_secret'").fetchone()["value"]
     db.commit()
     return secret
@@ -2061,6 +2064,15 @@ def set_setting(db, key, value):
                "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
 
 
+WINGMATE_PAUSED = "Wingmate syncing is paused. An admin can resume it in \u2699 → Wingmate."
+
+
+def wingmate_paused(db):
+    """While paused nothing comes in from Wingmate and nothing is sent to it (Preview,
+    which changes nothing, still works)."""
+    return get_setting(db, "wingmate_paused") == "1"
+
+
 def wingmate_client(db):
     token, campaign_id = get_setting(db, "wingmate_token"), get_setting(db, "wingmate_campaign_id")
     return wingmate.WingmateClient(token, campaign_id) if token and campaign_id else None
@@ -2114,6 +2126,8 @@ def run_wingmate_sync(dry_run=False):
             pipelines = wingmate_pipelines(db)
             if not pipelines:
                 return {"ok": False, "error": "Wingmate isn't connected yet."}
+            if not dry_run and wingmate_paused(db):
+                return {"ok": False, "paused": True, "error": WINGMATE_PAUSED}
             started = now()
             try:
                 totals, stages = {}, {}
@@ -2164,7 +2178,8 @@ def _wingmate_loop():
     while True:
         try:
             with app.app_context():
-                connected = bool(wingmate_pipelines(get_db()))
+                db = get_db()
+                connected = bool(wingmate_pipelines(db)) and not wingmate_paused(db)
             if connected:
                 run_wingmate_sync()
         except Exception:
@@ -2178,6 +2193,7 @@ def wingmate_status(db):
     cron_key = get_setting(db, "wingmate_cron_key")
     return {
         "connected": bool(token and get_setting(db, "wingmate_campaign_id")),
+        "paused": wingmate_paused(db),
         "token_hint": f"…{token[-4:]}" if token else "",
         "campaign_id": get_setting(db, "wingmate_campaign_id"),
         "campaign_name": get_setting(db, "wingmate_campaign_name"),
@@ -2340,12 +2356,26 @@ def remove_wingmate_pipeline(campaign_id):
     return jsonify(wingmate_status(db))
 
 
+@app.post("/api/wingmate/pause")
+@admin_only
+def pause_wingmate():
+    db = get_db()
+    paused = bool((request.get_json(silent=True) or {}).get("paused"))
+    if paused != wingmate_paused(db):
+        set_setting(db, "wingmate_paused", "1" if paused else "0")
+        log(db, "wingmate", "Paused Wingmate syncing" if paused else "Resumed Wingmate syncing")
+        db.commit()
+    return jsonify(wingmate_status(db))
+
+
 @app.post("/api/wingmate/sync")
 @admin_only
 def trigger_wingmate_sync():
     dry_run = bool((request.get_json(silent=True) or {}).get("dry_run"))
     if not wingmate_pipelines(get_db()):
         return bad("Connect Wingmate first")
+    if not dry_run and wingmate_paused(get_db()):
+        return bad(WINGMATE_PAUSED, 409)
     if not start_wingmate_sync(dry_run):
         return bad("A Wingmate sync is already running", 409)
     return jsonify({"started": True}), 202
@@ -2357,6 +2387,8 @@ def wingmate_cron():
     key = get_setting(get_db(), "wingmate_cron_key")
     if not key or not hmac.compare_digest(request.args.get("key", ""), key):
         return bad("Not found", 404)
+    if wingmate_paused(get_db()):
+        return jsonify({"started": False, "paused": True}), 202
     return jsonify({"started": start_wingmate_sync()}), 202
 
 
@@ -2367,7 +2399,8 @@ REFRESH_COOLDOWN_SECS = 60
 
 def wingmate_refresh_status(db):
     last = get_setting(db, "wingmate_last_result")
-    return {"connected": bool(wingmate_pipelines(db)), "running": _wingmate_state["running"] == "sync",
+    return {"connected": bool(wingmate_pipelines(db)), "paused": wingmate_paused(db),
+            "running": _wingmate_state["running"] == "sync",
             "last": json.loads(last) if last else None}
 
 
@@ -2382,6 +2415,8 @@ def wingmate_refresh():
     status = wingmate_refresh_status(db)
     if not status["connected"]:
         return bad("Wingmate isn't connected yet. Ask an admin to connect it in \u2699.")
+    if status["paused"]:
+        return bad("Wingmate syncing is paused for now.", 409)
     last = status["last"] or {}
     try:
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(last["at"])).total_seconds() if last.get("ok") else None

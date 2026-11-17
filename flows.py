@@ -265,6 +265,8 @@ def push(db, flow, node_id, events):
     settings = flow["wm_push"]
     if not flow["pipeline"] or not core.is_admin():
         return None
+    if core.wingmate_paused(db):
+        return (False, "Wingmate is paused, so nothing was sent to it. Update the lead in Wingmate by hand if needed.")
     leads = {r["campaign_id"]: r["lead_id"] for r in db.execute(
         "SELECT campaign_id, lead_id FROM wingmate_members WHERE node_id = ? AND lead_id <> ''", (node_id,))}
     clients = {str(s["campaign_id"]): c for s, c in core.wingmate_pipelines(db)}

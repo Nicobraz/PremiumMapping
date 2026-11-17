@@ -555,6 +555,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-size: 10px; font-weight: 650; line-height: 14px; white-space: nowrap;
 }
 
+/* ---------- Wingmate paused ---------- */
+.pill-paused { background: #fff4e5; color: #8a4b00; }
+.wm-paused { margin: 6px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid #f5c98a; background: #fff4e5; color: #8a4b00; font-size: 13px; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .pill-paused, :root:not([data-theme="light"]) .wm-paused { background: #3a2a12; color: #f5c98a; border-color: #6b4a1a; }
+}
+:root[data-theme="dark"] .pill-paused, :root[data-theme="dark"] .wm-paused { background: #3a2a12; color: #f5c98a; border-color: #6b4a1a; }
+
 /* ---------- duplicate warnings ---------- */
 .form label.suggest-host { position: relative; }
 .suggest {
