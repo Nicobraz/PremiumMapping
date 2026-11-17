@@ -367,6 +367,11 @@ def _init_schema(db):
     # Wingmate starts out paused (and was paused on the deploy that added pausing, while
     # the team reorganized Wingmate). An admin resumes it in the Wingmate settings.
     db.execute("INSERT INTO settings (key, value) VALUES ('wingmate_paused', '1') ON CONFLICT (key) DO NOTHING")
+    # Rep views saved before the org-chart layout was fixed are scattered: clear them once
+    # so each rep's view is laid out fresh, as a compact chart of just their records.
+    if not db.execute("SELECT 1 FROM settings WHERE key = 'view_positions_reset_v1'").fetchone():
+        db.execute("DELETE FROM view_positions")
+        db.execute("INSERT INTO settings (key, value) VALUES ('view_positions_reset_v1', '1')")
     secret = db.execute("SELECT value FROM settings WHERE key = 'session_secret'").fetchone()["value"]
     db.commit()
     return secret

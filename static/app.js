@@ -642,7 +642,7 @@ function placeUnpositioned() {
 // comes first: companies left to right (a company counts as edited when any of its
 // people is), people left to right, row by row. Records that are connected are kept side by side,
 // so their lines are short and don't run through other dots.
-const ORG = { colWidth: 200, personGap: 150, perRow: 5, firstGap: 110, rowGap: 78, bandGap: 150 };
+const ORG = { colWidth: 180, personGap: 140, perRow: 5, firstGap: 100, rowGap: 74, bandGap: 120 };
 
 // Orders items newest first, but walks each group of connected items together so
 // every item sits next to one it's linked to.
@@ -720,6 +720,45 @@ function bestOrgChart(plan) {
     if (!best || score < best.score - 0.01) best = { ...layout, score };
   }
   return best;
+}
+
+function orgChartFor(plan, maxWidth) {
+  const pos = {};
+  let x = 0;
+  let y = 0;
+  let bandHeight = 0;
+  for (const { company, staff } of plan.columns) {
+    const across = Math.max(1, Math.min(staff.length, ORG.perRow));
+    const width = ORG.colWidth + (across - 1) * ORG.personGap;
+    if (x > 0 && x + width > maxWidth) {  // start a new band of companies
+      y += bandHeight + ORG.bandGap;
+      x = 0;
+      bandHeight = 0;
+    }
+    const middle = x + width / 2;
+    pos[company.id] = { x: middle, y };
+    staff.forEach((p, i) => {
+      const row = Math.floor(i / ORG.perRow);
+      const inRow = Math.min(ORG.perRow, staff.length - row * ORG.perRow);  // a short last row is centred too
+      pos[p.id] = { x: middle + ((i % ORG.perRow) - (inRow - 1) / 2) * ORG.personGap,
+                    y: y + ORG.firstGap + row * ORG.rowGap };
+    });
+    const rows = Math.ceil(staff.length / ORG.perRow);
+    bandHeight = Math.max(bandHeight, rows ? ORG.firstGap + (rows - 1) * ORG.rowGap : 0);
+    x += width;
+  }
+  let widest = Math.max(x, ORG.colWidth);
+  let bottom = y + bandHeight;
+  if (plan.loose.length) {
+    const top = plan.columns.length ? bottom + ORG.bandGap : 0;
+    const perRow = Math.max(4, Math.floor(Math.max(maxWidth, widest) / ORG.colWidth));
+    plan.loose.forEach((p, i) => {
+      pos[p.id] = { x: ORG.colWidth / 2 + (i % perRow) * ORG.colWidth, y: top + Math.floor(i / perRow) * ORG.rowGap };
+    });
+    widest = Math.max(widest, Math.min(plan.loose.length, perRow) * ORG.colWidth);
+    bottom = top + Math.floor((plan.loose.length - 1) / perRow) * ORG.rowGap;
+  }
+  return { pos, width: widest, height: bottom + ORG.rowGap };
 }
 
 // A rep's view as an org chart of just their records.
