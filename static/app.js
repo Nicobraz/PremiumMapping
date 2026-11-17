@@ -63,7 +63,10 @@ const state = {
   dirFilters: [],       // [{ field, value }] in the Contacts list
   stageFilter: '',
   view: storeGet('pss.view') || 'team',
-  unsaved: new Map(),  // dots moved but not saved yet (id -> position)  // 'team', 'mine' or (admins) a rep's name
+  unsaved: new Map(),  // dots moved but not saved yet (id -> position)
+  pipelines: [],  // connected Wingmate pipelines: { id, name, nodes: [record ids] }
+  pipeline: storeGet('pss.pipeline'),  // the pipeline picked to show, '' for all
+  pipelinePos: null,  // the grid shown while a pipeline is picked (not saved)  // 'team', 'mine' or (admins) a rep's name
   viewSets: null,       // { visible } node ids when a rep view is on
   mapIds: null,         // node ids drawn on the map (the rest are saved off the map)
   tagFilter: '',
@@ -77,7 +80,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
 const hasPos = (n) => n && n.x != null && n.y != null;
 // Where a record sits right now: its spot in the rep's view being shown, else its
 // Team view spot (shared by everyone).
-const posFor = (n) => state.unsaved?.get(n.id) || state.viewPos?.get(n.id) || (hasPos(n) ? { x: n.x, y: n.y } : undefined);
+const posFor = (n) => state.pipelinePos?.get(n.id) || state.unsaved?.get(n.id) || state.viewPos?.get(n.id) || (hasPos(n) ? { x: n.x, y: n.y } : undefined);
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 const splitTags = (s) => String(s || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
 // Every company should have a tag; one without shows (and filters as) "(unknown)".
@@ -692,6 +695,7 @@ function viewChartPositions() {
 }
 
 function runLayout(randomize) {
+  if (state.pipeline) { applyView(); fitView(); return; }  // a pipeline's grid is never saved
   const inRepView = !!(viewRep() && state.viewPos);
   const eles = inRepView ? cy.nodes().not('.view-hidden') : cy.nodes();
   if (!eles.length) return;
@@ -741,6 +745,7 @@ cy.on('render', scheduleTagPositions);
 cy.on('dragfree', 'node', (evt) => {
   const el = evt.target;
   const p = el.position();
+  if (state.pipelinePos) { state.pipelinePos.set(el.data('nid'), { x: p.x, y: p.y }); return; }  // not saved
   state.unsaved.set(el.data('nid'), { x: Math.round(p.x), y: Math.round(p.y) });
   renderLayoutBar();
 });
@@ -816,6 +821,7 @@ async function doSync() {
     }
     state.reps = data.reps || [];
     state.tagList = data.tag_list || [];
+    state.pipelines = data.pipelines || [];
     state.transfers = data.transfers || [];
     renderRequestsBadge();
     $('#storage-warning').hidden = !data.temporary_storage;
@@ -907,16 +913,26 @@ function viewRep() {
   return state.isAdmin ? state.view : myName();
 }
 
+// A pipeline picked in the menu narrows the view to that Wingmate pipeline's records
+// (with the companies its contacts work at), laid out in a fresh grid that isn't saved.
+function pipelineMembers() {
+  const p = state.pipelines.find((x) => x.id === state.pipeline);
+  return p ? new Set(p.nodes) : null;
+}
+
 function computeViewSets(rep) {
   const r = rep.trim().toLowerCase();
+  const members = pipelineMembers();
   const mine = new Set();
   const visible = new Set();
   for (const n of state.nodes.values()) {
-    if (n.owner_rep.trim().toLowerCase() !== r) continue;
+    if (r && n.owner_rep.trim().toLowerCase() !== r) continue;
+    if (members && !members.has(n.id)) continue;
     mine.add(n.id);
     visible.add(n.id);
     if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) visible.add(n.company_id);
   }
+  if (!r) for (const id of visible) mine.add(id);  // Team view: nothing is another rep's
   return { mine, visible };
 }
 
@@ -932,8 +948,19 @@ function inRepView(id) {
 function applyView() {
   scheduleBends();
   const rep = viewRep();
-  state.viewSets = rep ? computeViewSets(rep) : null;
+  if (state.pipeline && !pipelineMembers()) state.pipeline = '';  // that pipeline was removed
+  state.viewSets = rep || state.pipeline ? computeViewSets(rep) : null;
   const v = state.viewSets;
+  const hadGrid = !!state.pipelinePos;
+  state.pipelinePos = null;
+  if (state.pipeline) state.pipelinePos = new Map(Object.entries(viewChartPositions()).map(([id, p]) => [Number(id), p]));
+  if (state.pipelinePos || hadGrid) {
+    cy.batch(() => cy.nodes().forEach((el) => {
+      const n = state.nodes.get(el.data('nid'));
+      const p = n && posFor(n);
+      if (p && !el.grabbed()) el.position(p);
+    }));
+  }
   cy.batch(() => {
     cy.nodes().forEach((el) => {
       const id = el.data('nid');
@@ -941,7 +968,8 @@ function applyView() {
       el.toggleClass('not-mine', !!v && v.visible.has(id) && !v.mine.has(id));
     });
   });
-  $('#view-select').classList.toggle('active', !!v && state.isAdmin);
+  $('#view-select').classList.toggle('active', !!rep && state.isAdmin);
+  renderPipelineSelect();
   $('#view-key').hidden = !v || ![...v.visible].some((id) => !v.mine.has(id));
   if ((rep || '').toLowerCase() !== (state.viewPosFor || '')) loadViewPositions();
 }
@@ -993,7 +1021,7 @@ function fitView() {
 // company. Returns true when it arranged the whole view.
 function placeViewMissing() {
   const v = state.viewSets;
-  if (!state.viewPos || !v || !viewRep()) return false;
+  if (!state.viewPos || !v || !viewRep() || state.pipeline) return false;
   const all = mapNodes().filter((n) => v.visible.has(n.id));
   const missing = all.filter((n) => !state.viewPos.has(n.id));
   if (!missing.length) return false;
@@ -1052,6 +1080,34 @@ function setView(view) {
 }
 
 $('#view-select').addEventListener('change', (evt) => setView(evt.target.value));
+
+function renderPipelineSelect() {
+  const select = $('#pipeline-select');
+  select.hidden = !state.pipelines.length;
+  const options = '<option value="">All pipelines</option>'
+    + state.pipelines.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  if (select.dataset.options !== options) { select.innerHTML = options; select.dataset.options = options; }
+  select.value = state.pipeline;
+  select.classList.toggle('active', !!state.pipeline);
+}
+
+function setPipeline(id) {
+  settleLayout();
+  state.pipeline = id;
+  storeSet('pss.pipeline', id);
+  applyView();
+  applyFilters();
+  updateStats();
+  applySearch();
+  scheduleBends();
+  scheduleTagPositions();
+  fitView();
+  if (id && !state.viewSets?.visible.size) {
+    toast(`Nothing from ${state.pipelines.find((p) => p.id === id)?.name || 'that pipeline'} is on ${viewRep() ? 'this' : 'the'} map.`);
+  }
+}
+
+$('#pipeline-select').addEventListener('change', (evt) => setPipeline(evt.target.value));
 
 function applyFilters() {
   scheduleBends();
@@ -3417,6 +3473,7 @@ $('#btn-zoom-in').addEventListener('click', () => cy.animate({ zoom: { level: cy
 $('#btn-zoom-out').addEventListener('click', () => cy.animate({ zoom: { level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } } }, { duration: 150 }));
 $('#btn-fit').addEventListener('click', () => cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 }));
 $('#btn-layout').addEventListener('click', () => {
+  if (state.pipeline) { runLayout(false); return; }  // just tidies the pipeline's grid
   const rep = viewRep();
   const ask = rep
     ? `Put ${state.view === 'mine' ? 'your' : `${rep}'s`} view back in the standard grid? Only this view changes.`

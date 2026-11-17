@@ -839,7 +839,19 @@ def get_graph():
     remember_version(version, generation)
     if since is not None and since == version:
         return jsonify({"version": version, "unchanged": True})
-    return jsonify({"version": version, "temporary_storage": TEMPORARY_STORAGE, "tag_list": tag_list(db), **snapshot(db)})
+    return jsonify({"version": version, "temporary_storage": TEMPORARY_STORAGE, "tag_list": tag_list(db),
+                    "pipelines": pipeline_views(db), **snapshot(db)})
+
+
+def pipeline_views(db):
+    """Each connected Wingmate pipeline with the records in it (as of its last sync), for
+    the map's pipeline picker."""
+    members = {}
+    for r in db.execute("SELECT campaign_id, node_id FROM wingmate_members"):
+        members.setdefault(str(r["campaign_id"]), []).append(r["node_id"])
+    return [{"id": str(settings["campaign_id"]), "name": settings.get("name") or f"Pipeline {settings['campaign_id']}",
+             "nodes": members.get(str(settings["campaign_id"]), [])}
+            for settings, _ in wingmate_pipelines(db)]
 
 
 # ---------- nodes ----------
