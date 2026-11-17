@@ -62,11 +62,11 @@ const state = {
   enrollFor: null,      // contact whose "add to flow" box is open
   dirFilters: [],       // [{ field, value }] in the Contacts list
   stageFilter: '',
-  view: storeGet('pss.view') || 'team',
+  view: storeGet('pss.view') || 'mine',  // 'mine' or (admins) a rep's name; 'team' only when there are no reps
   unsaved: new Map(),  // dots moved but not saved yet (id -> position)
   pipelines: [],  // connected Wingmate pipelines: { id, name, nodes: [record ids] }
   pipeline: storeGet('pss.pipeline'),  // the pipeline picked to show, '' for all
-  pipelinePos: null,  // the grid shown while a pipeline is picked (not saved)  // 'team', 'mine' or (admins) a rep's name
+  pipelinePos: null,  // the grid shown while a pipeline is picked (not saved)
   viewSets: null,       // { visible } node ids when a rep view is on
   mapIds: null,         // node ids drawn on the map (the rest are saved off the map)
   tagFilter: '',
@@ -157,8 +157,7 @@ async function loadMe() {
     setTimeout(loadMe, POLL_MS);
     return;
   }
-  // Reps start in My view (just their records) each time they open PSS Connect;
-  // Team view is one click away. Admins keep whichever view they used last.
+  // Reps always see their own map. Admins keep whichever rep's view they used last.
   if (me.rep && !me.rep.is_admin && state.viewDefaultedFor !== me.rep.id) state.view = 'mine';
   if (me.rep) state.viewDefaultedFor = me.rep.id;
   state.me = me.rep;
@@ -905,7 +904,8 @@ function filterMatches() {
 // Reps' map is always their own view: the companies and contacts assigned to them
 // (Wingmate's lead owner, or ones they added), plus the company each of their contacts
 // works at, drawn gray when that company is another rep's. No other reps' contacts or
-// companies are drawn. Search still finds everyone's records. Team view is for admins.
+// companies are drawn. Search still finds everyone's records. There's no Team view:
+// admins pick a rep's view to see that rep's map.
 
 function viewRep() {
   if (state.view === 'team') return '';
@@ -995,7 +995,7 @@ async function loadViewPositions() {
   state.viewPos = new Map(Object.entries(positions).map(([id, [x, y]]) => [Number(id), { x, y }]));
   applyViewPositions();
   if (state.viewSets && !state.viewSets.mine.size) {
-    toast(`Nothing is assigned to ${state.view === 'mine' ? 'you' : viewRep()} yet.${state.isAdmin ? ' Switch to Team view to see everyone\'s.' : ' Search still finds everyone\'s records.'}`);
+    toast(`Nothing is assigned to ${state.view === 'mine' ? 'you' : viewRep()} yet. Search still finds everyone's records.`);
   }
 }
 
@@ -1056,14 +1056,15 @@ function placeViewMissing() {
 function refreshViewOptions() {
   const select = $('#view-select');
   const me = myName();
+  // There's no Team view: every map is one rep's. Reps see their own; admins pick any rep.
   const others = state.isAdmin ? activeReps().map((r) => r.name).filter((name) => name !== me) : [];
-  if (state.view !== 'team' && state.view !== 'mine' && !others.includes(state.view)) state.view = 'team';
-  if (state.view === 'mine' && !me) state.view = 'team';
-  if (!state.isAdmin && me) state.view = 'mine';  // reps only see their own map
+  if (!state.isAdmin && me) state.view = 'mine';
+  else if (state.view === 'mine' && !me) state.view = others[0] || 'team';
+  else if (state.view !== 'mine' && !others.includes(state.view)) state.view = me ? 'mine' : others[0] || 'team';
   select.disabled = !state.isAdmin && !!me;
-  select.innerHTML = (state.isAdmin || !me ? '<option value="team">Team view</option>' : '')
-    + (me ? `<option value="mine">${state.isAdmin ? 'My view' : 'My clients'}</option>` : '')
-    + (others.length ? `<optgroup label="A rep's view">${others.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</optgroup>` : '');
+  select.innerHTML = (me ? `<option value="mine">${state.isAdmin ? `My view (${esc(me)})` : 'My clients'}</option>` : '')
+    + (others.length ? `<optgroup label="A rep's view">${others.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</optgroup>` : '')
+    + (state.view === 'team' ? '<option value="team">Everyone (no reps yet)</option>' : '');
   select.value = state.view;
 }
 
