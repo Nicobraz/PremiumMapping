@@ -62,7 +62,8 @@ const state = {
   enrollFor: null,      // contact whose "add to flow" box is open
   dirFilters: [],       // [{ field, value }] in the Contacts list
   stageFilter: '',
-  view: storeGet('pss.view') || 'team',  // 'team', 'mine' or (admins) a rep's name
+  view: storeGet('pss.view') || 'team',
+  unsaved: new Map(),  // dots moved but not saved yet (id -> position)  // 'team', 'mine' or (admins) a rep's name
   viewSets: null,       // { visible } node ids when a rep view is on
   mapIds: null,         // node ids drawn on the map (the rest are saved off the map)
   tagFilter: '',
@@ -76,7 +77,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
 const hasPos = (n) => n && n.x != null && n.y != null;
 // Where a record sits right now: its spot in the rep's view being shown, else its
 // Team view spot (shared by everyone).
-const posFor = (n) => state.viewPos?.get(n.id) || (hasPos(n) ? { x: n.x, y: n.y } : undefined);
+const posFor = (n) => state.unsaved?.get(n.id) || state.viewPos?.get(n.id) || (hasPos(n) ? { x: n.x, y: n.y } : undefined);
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 const splitTags = (s) => String(s || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
 // Every company should have a tag; one without shows (and filters as) "(unknown)".
@@ -636,126 +637,45 @@ function placeUnpositioned() {
   savePositions(updates, '');
 }
 
-// Org-chart layout: companies in rows across the top, each company's people beneath it
-// in rows of 5, and
-// contacts without a company in a block at the bottom. Most recently added or edited
-// comes first: companies left to right (a company counts as edited when any of its
-// people is), people left to right, row by row. Records that are connected are kept side by side,
-// so their lines are short and don't run through other dots.
-const ORG = { colWidth: 180, personGap: 140, perRow: 5, firstGap: 100, rowGap: 74, bandGap: 120 };
-
-// Orders items newest first, but walks each group of connected items together so
-// every item sits next to one it's linked to.
-function chainOrder(items, links, newer) {
-  const byId = new Map(items.map((n) => [n.id, n]));
-  const seen = new Set();
-  const out = [];
-  for (const start of [...items].sort(newer)) {
-    const stack = [start];
-    while (stack.length) {
-      const n = stack.pop();
-      if (seen.has(n.id)) continue;
-      seen.add(n.id);
-      out.push(n);
-      const next = [...(links.get(n.id) || [])].map((id) => byId.get(id))
-        .filter((m) => m && !seen.has(m.id)).sort(newer).reverse();
-      stack.push(...next);  // the newest neighbour comes off the stack first
-    }
-  }
-  return out;
-}
-
-function orgChartPlan() {
-  const nodes = mapNodes();
-  const companyIds = new Set(nodes.filter((n) => n.type === 'company').map((n) => n.id));
-  const staffOf = new Map([...companyIds].map((id) => [id, []]));
-  const loose = [];
-  for (const n of nodes) {
-    if (n.type !== 'person') continue;
-    if (staffOf.has(n.company_id)) staffOf.get(n.company_id).push(n);
-    else loose.push(n);
-  }
-  const homeOf = (id) => {
-    const n = state.nodes.get(id);
-    if (!n) return null;
-    if (n.type === 'company') return n.id;
-    return staffOf.has(n.company_id) ? n.company_id : 'loose';
-  };
-  const peopleLinks = new Map();
-  const companyLinks = new Map();
-  const link = (map, a, b) => {
-    if (!map.has(a)) map.set(a, new Set());
-    if (!map.has(b)) map.set(b, new Set());
-    map.get(a).add(b);
-    map.get(b).add(a);
-  };
-  for (const e of state.edges.values()) {
-    const [a, b] = [homeOf(e.source_id), homeOf(e.target_id)];
-    if (a == null || b == null) continue;
-    if (a === b) link(peopleLinks, e.source_id, e.target_id);           // same company (or both loose)
-    else if (a !== 'loose' && b !== 'loose') link(companyLinks, a, b);  // across companies
-  }
-  const newest = (x, y) => String(y.updated_at).localeCompare(String(x.updated_at)) || byName(x, y);
-  const latest = new Map([...companyIds].map((id) => [id, staffOf.get(id).reduce(
-    (t, p) => (String(p.updated_at) > t ? String(p.updated_at) : t), String(state.nodes.get(id).updated_at))]));
-  const newestCompany = (x, y) => latest.get(y.id).localeCompare(latest.get(x.id)) || byName(x, y);
-  const companies = chainOrder([...companyIds].map((id) => state.nodes.get(id)), companyLinks, newestCompany);
-  return {
-    columns: companies.map((c) => ({ company: c, staff: chainOrder(staffOf.get(c.id), peopleLinks, newest) })),
-    loose: chainOrder(loose, peopleLinks, newest),
-  };
-}
-
-// Tries a range of row widths and keeps the one whose overall shape best matches the screen.
-function orgChartPositions(plan = orgChartPlan()) {
-  return bestOrgChart(plan).pos;
-}
-
-function bestOrgChart(plan) {
-  const aspect = Math.max(0.5, cy.width() / Math.max(1, cy.height()));
-  let best = null;
-  for (let width = 600; width <= 8000; width += 200) {
-    const layout = orgChartFor(plan, width);
-    const score = Math.abs(Math.log((layout.width / Math.max(layout.height, 1)) / aspect));
-    if (!best || score < best.score - 0.01) best = { ...layout, score };
-  }
-  return best;
-}
+// Standard layout: a grid. Each company gets a cell of the same width, with its people
+// beneath it in rows of 3; the cells line up in rows and columns, sized to the screen.
+// Contacts without a company go in a block at the bottom. Most recently added or edited
+// comes first: companies left to right, row by row (a company counts as edited when any
+// of its people is). Records that are connected are kept side by side, so their lines
+// are short and don't run through other dots.
+const ORG = { personGap: 140, perRow: 3, firstGap: 90, rowGap: 70, bandGap: 90, cellPad: 100 };
+ORG.colWidth = (ORG.perRow - 1) * ORG.personGap + ORG.cellPad;  // one grid cell
 
 function orgChartFor(plan, maxWidth) {
   const pos = {};
-  let x = 0;
+  const cols = Math.max(1, Math.floor(maxWidth / ORG.colWidth));
+  const depth = (staff) => (staff.length ? ORG.firstGap + (Math.ceil(staff.length / ORG.perRow) - 1) * ORG.rowGap : 0);
   let y = 0;
-  let bandHeight = 0;
-  for (const { company, staff } of plan.columns) {
-    const across = Math.max(1, Math.min(staff.length, ORG.perRow));
-    const width = ORG.colWidth + (across - 1) * ORG.personGap;
-    if (x > 0 && x + width > maxWidth) {  // start a new band of companies
-      y += bandHeight + ORG.bandGap;
-      x = 0;
-      bandHeight = 0;
-    }
-    const middle = x + width / 2;
-    pos[company.id] = { x: middle, y };
-    staff.forEach((p, i) => {
-      const row = Math.floor(i / ORG.perRow);
-      const inRow = Math.min(ORG.perRow, staff.length - row * ORG.perRow);  // a short last row is centred too
-      pos[p.id] = { x: middle + ((i % ORG.perRow) - (inRow - 1) / 2) * ORG.personGap,
-                    y: y + ORG.firstGap + row * ORG.rowGap };
+  let bottom = 0;
+  for (let start = 0; start < plan.columns.length; start += cols) {
+    const row = plan.columns.slice(start, start + cols);
+    row.forEach(({ company, staff }, c) => {
+      const middle = c * ORG.colWidth + ORG.colWidth / 2;
+      pos[company.id] = { x: middle, y };
+      staff.forEach((p, i) => {
+        const line = Math.floor(i / ORG.perRow);
+        const inRow = Math.min(ORG.perRow, staff.length - line * ORG.perRow);  // a short last row is centred too
+        pos[p.id] = { x: middle + ((i % ORG.perRow) - (inRow - 1) / 2) * ORG.personGap,
+                      y: y + ORG.firstGap + line * ORG.rowGap };
+      });
     });
-    const rows = Math.ceil(staff.length / ORG.perRow);
-    bandHeight = Math.max(bandHeight, rows ? ORG.firstGap + (rows - 1) * ORG.rowGap : 0);
-    x += width;
+    bottom = y + Math.max(...row.map((c) => depth(c.staff)));
+    y = bottom + ORG.rowGap + ORG.bandGap;
   }
-  let widest = Math.max(x, ORG.colWidth);
-  let bottom = y + bandHeight;
+  const usedCols = Math.min(cols, Math.max(1, plan.columns.length));
+  let widest = usedCols * ORG.colWidth;
   if (plan.loose.length) {
-    const top = plan.columns.length ? bottom + ORG.bandGap : 0;
-    const perRow = Math.max(4, Math.floor(Math.max(maxWidth, widest) / ORG.colWidth));
+    const top = plan.columns.length ? y : 0;
+    const perRow = Math.max(4, Math.floor(Math.max(widest, maxWidth) / ORG.personGap));
     plan.loose.forEach((p, i) => {
-      pos[p.id] = { x: ORG.colWidth / 2 + (i % perRow) * ORG.colWidth, y: top + Math.floor(i / perRow) * ORG.rowGap };
+      pos[p.id] = { x: ORG.personGap / 2 + (i % perRow) * ORG.personGap, y: top + Math.floor(i / perRow) * ORG.rowGap };
     });
-    widest = Math.max(widest, Math.min(plan.loose.length, perRow) * ORG.colWidth);
+    widest = Math.max(widest, Math.min(plan.loose.length, perRow) * ORG.personGap);
     bottom = top + Math.floor((plan.loose.length - 1) / perRow) * ORG.rowGap;
   }
   return { pos, width: widest, height: bottom + ORG.rowGap };
@@ -814,19 +734,48 @@ async function savePositions(positions, view = state.viewPos ? state.viewPosFor 
   }
 }
 
-const pendingPositions = new Map();
-let positionTimer = null;
 cy.on('render', scheduleTagPositions);
 
+// Moving dots doesn't save by itself: the moves wait until Save (or Undo puts them back).
+// They're kept per view and survive the map refreshing in the meantime.
 cy.on('dragfree', 'node', (evt) => {
   const el = evt.target;
-  pendingPositions.set(el.data('nid'), rememberPos(el.data('nid'), el.position()));
-  clearTimeout(positionTimer);
-  positionTimer = setTimeout(() => {
-    const batch = [...pendingPositions.values()];
-    pendingPositions.clear();
-    savePositions(batch);
-  }, 250);
+  const p = el.position();
+  state.unsaved.set(el.data('nid'), { x: Math.round(p.x), y: Math.round(p.y) });
+  renderLayoutBar();
+});
+
+function renderLayoutBar() {
+  const n = state.unsaved.size;
+  $('#layout-bar').hidden = !n;
+  $('#layout-bar-text').textContent = `You moved ${n === 1 ? '1 dot' : `${n} dots`}`;
+}
+
+function saveLayout() {
+  if (!state.unsaved.size) return;
+  const batch = [...state.unsaved].map(([id, p]) => rememberPos(id, p));
+  state.unsaved.clear();
+  renderLayoutBar();
+  savePositions(batch);
+  toast(viewRep() ? 'Layout saved for your view' : 'Layout saved for everyone');
+}
+
+function undoLayout() {
+  state.unsaved.clear();
+  renderLayoutBar();
+  applyViewPositions();
+}
+
+// Before switching views or arranging, offer to keep unsaved moves.
+function settleLayout() {
+  if (!state.unsaved.size) return;
+  if (confirm('Save the dots you moved first? Cancel puts them back.')) saveLayout(); else undoLayout();
+}
+
+$('#layout-save').addEventListener('click', saveLayout);
+$('#layout-undo').addEventListener('click', undoLayout);
+window.addEventListener('beforeunload', (evt) => {
+  if (state.unsaved.size) { evt.preventDefault(); evt.returnValue = ''; }
 });
 
 // ---------- sync ----------
@@ -1091,6 +1040,7 @@ function refreshViewOptions() {
 }
 
 function setView(view) {
+  settleLayout();
   state.view = view;
   storeSet('pss.view', view);
   applyView();
@@ -3468,11 +3418,13 @@ $('#btn-zoom-out').addEventListener('click', () => cy.animate({ zoom: { level: c
 $('#btn-fit').addEventListener('click', () => cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 }));
 $('#btn-layout').addEventListener('click', () => {
   const rep = viewRep();
-  if (rep) {
-    if (confirm(`Arrange ${state.view === 'mine' ? 'your' : `${rep}'s`} view as an org chart? Only this view changes; Team view stays as it is.`)) runLayout(false);
-    return;
-  }
-  if (confirm('Arrange the whole map as an org chart (companies across the top, their people in a column under each)? This moves everyone\'s nodes for the whole team.')) runLayout(false);
+  const ask = rep
+    ? `Put ${state.view === 'mine' ? 'your' : `${rep}'s`} view back in the standard grid? Only this view changes.`
+    : 'Arrange the whole map in the standard grid? This moves everyone\'s dots in Team view.';
+  if (!confirm(ask)) return;
+  state.unsaved.clear();
+  renderLayoutBar();
+  runLayout(false);
 });
 $('#empty').addEventListener('click', (evt) => {
   const which = evt.target.closest('[data-empty]')?.dataset.empty;

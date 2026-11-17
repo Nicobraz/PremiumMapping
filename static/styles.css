@@ -203,6 +203,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .zoom-controls {
   position: absolute; left: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 6px; z-index: 4;
 }
+.layout-bar {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 6;
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; white-space: nowrap;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+  font-size: 13px; font-weight: 600;
+}
 
 .empty {
   position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%);
