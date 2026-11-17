@@ -909,10 +909,9 @@ function filterMatches() {
 
 // ---------- team view / rep view ----------
 // Reps' map is always their own view: the companies and contacts assigned to them
-// (Wingmate's lead owner, or ones they added), plus any company where one of their
-// contacts works. At such a shared company, other reps' contacts show too, drawn gray,
-// as does the company itself when it isn't theirs. Nothing else of other reps' is drawn.
-// Search still finds everyone's records. Team view (the whole map) is for admins.
+// (Wingmate's lead owner, or ones they added), plus the company each of their contacts
+// works at, drawn gray when that company is another rep's. No other reps' contacts or
+// companies are drawn. Search still finds everyone's records. Team view is for admins.
 
 function viewRep() {
   if (state.view === 'team') return '';
@@ -929,10 +928,6 @@ function computeViewSets(rep) {
     mine.add(n.id);
     visible.add(n.id);
     if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) visible.add(n.company_id);
-  }
-  // Everyone's contacts at a company in this view.
-  for (const n of state.nodes.values()) {
-    if (n.type === 'person' && n.company_id != null && visible.has(n.company_id)) visible.add(n.id);
   }
   return { mine, visible };
 }
