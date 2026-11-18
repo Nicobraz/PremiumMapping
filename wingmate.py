@@ -176,32 +176,64 @@ def _says_yes(value):
     return False
 
 
-def push_flag(item, depth=0):
-    """True/False for the lead's "PSS Connect Push" field, or None when it doesn't have one."""
+_MISSING = object()
+
+
+def find_field(item, is_label, depth=0):
+    """The value of the lead info field whose label passes is_label, or _MISSING."""
     if depth > 6:
-        return None
+        return _MISSING
     if isinstance(item, dict):
         label = next((item[k] for k in _LABEL_KEYS if isinstance(item.get(k), str)), None)
         nested = next((v for k, v in item.items() if k in ("custom_field", "field", "definition", "lead_info_field")
                        and isinstance(v, dict)), None)
         if nested is not None and label is None:
             label = next((nested[k] for k in _LABEL_KEYS if isinstance(nested.get(k), str)), None)
-        if label is not None and _is_push_label(label):
-            return any(_says_yes(item[k]) for k in _VALUE_KEYS if k in item)
+        if label is not None and is_label(label):
+            return [item[k] for k in _VALUE_KEYS if k in item]
         for key, value in item.items():
-            if _is_push_label(key):
-                return _says_yes(value)
+            if is_label(key):
+                return value
         for value in item.values():
             if isinstance(value, (dict, list)):
-                found = push_flag(value, depth + 1)
-                if found is not None:
+                found = find_field(value, is_label, depth + 1)
+                if found is not _MISSING:
                     return found
     elif isinstance(item, list):
         for value in item:
-            found = push_flag(value, depth + 1)
-            if found is not None:
+            found = find_field(value, is_label, depth + 1)
+            if found is not _MISSING:
                 return found
-    return None
+    return _MISSING
+
+
+def push_flag(item):
+    """True/False for the lead's "PSS Connect Push" field, or None when it doesn't have one."""
+    value = find_field(item, _is_push_label)
+    return None if value is _MISSING else _says_yes(value)
+
+
+def _texts(value):
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [t for v in value for t in _texts(v)]
+    if isinstance(value, dict):
+        return [t for k in _VALUE_KEYS + ("name", "label") if k in value for t in _texts(value[k])]
+    return []
+
+
+def card_kind(item):
+    """The lead's "PSS Connect" field (Company or Contact): 'company', 'contact' or ''.
+    Company: the lead is a company card. Contact: its contact goes under the company
+    lead they're linked to."""
+    value = find_field(item, lambda label: "pss connect" in _words(label) and "push" not in _words(label))
+    words = " ".join(_words(t) for t in _texts(value)) if value is not _MISSING else ""
+    if "contact" in words and "company" not in words:
+        return "contact"
+    if "company" in words and "contact" not in words:
+        return "company"
+    return ""
 
 
 def custom_value(item, *words):
@@ -403,14 +435,43 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                     return left
         return ""
 
-    person_leads = {}  # lead id -> the company name it belongs to
-    own_lead = {}  # a contact (by email, or name at a company) -> their own person lead
+    # The "PSS Connect" lead info field says whether a lead is a Company card or a
+    # Contact. A Contact lead's contact goes under the company lead that lists them too
+    # (same email, or same name); failing that, the "Company - Person" name says which.
+    kinds = {str(l.get("id")): card_kind(l) for l in leads}
+    lead_names = {str(l.get("id")): text(l.get("name") or l.get("identifier")) for l in leads}
+    listed_on = {}  # a contact (email / name) -> the company leads that list them
     for lead in leads:
         lead_id = str(lead.get("id"))
-        company_name = company_of_person_lead(lead_id, text(lead.get("name") or lead.get("identifier")))
-        if not company_name:
+        if kinds[lead_id] == "contact":
             continue
-        person_leads[lead_id] = company_name
+        for contact in contacts_by_lead.get(lead_id, []):
+            email = text(contact.get("email")).lower()
+            if email:
+                listed_on.setdefault(("email", email), []).append(lead_id)
+            listed_on.setdefault(("name", norm_name(text(contact.get("name")))), []).append(lead_id)
+
+    person_leads = {}  # contact lead id -> (its company lead id or None, company name or '')
+    own_lead = {}  # a contact (by email, or name at a company) -> their own contact lead
+    for lead in leads:
+        lead_id = str(lead.get("id"))
+        if kinds[lead_id] == "company":
+            continue
+        company_lead, company_name = None, ""
+        if kinds[lead_id] == "contact":
+            for contact in contacts_by_lead.get(lead_id, []):
+                email = text(contact.get("email")).lower()
+                hits = (listed_on.get(("email", email), []) if email else []) \
+                    or listed_on.get(("name", norm_name(text(contact.get("name")))), [])
+                hits = [h for h in hits if h != lead_id and kinds.get(h) == "company"] or [h for h in hits if h != lead_id]
+                if hits:
+                    company_lead, company_name = hits[0], lead_names.get(hits[0], "")
+                    break
+        if not company_name:
+            company_name = company_of_person_lead(lead_id, lead_names[lead_id])
+        if not company_name and kinds[lead_id] != "contact":
+            continue  # an ordinary lead: a company card
+        person_leads[lead_id] = (company_lead, company_name)
         for contact in contacts_by_lead.get(lead_id, []):
             email = text(contact.get("email")).lower()
             if email:
@@ -547,11 +608,19 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             db.execute("UPDATE nodes SET tags = ? WHERE id = ?", (", ".join(merged), into["id"]))
         move_refs(old, into)
 
-    def person_lead_company(lead_id, wm_id, company_name, location, owner, held):
-        """The company a "Company - Person" lead belongs to: found by name or created, with
-        the lead recorded as one of its leads. A company an earlier sync made from the lead
-        is folded into it."""
-        target = companies_by_name.get(norm_name(company_name, True))
+    def person_lead_company(lead_id, wm_id, company_name, location, owner, held, company_lead=None):
+        """The company a contact lead belongs to: its company lead's card, else found by name
+        or created, with the lead recorded as one of its leads. A company an earlier sync
+        made from the lead is folded into it."""
+        target = None
+        if company_lead:
+            ref = f"lead:{company_lead}"
+            target = by_wm.get(ref)
+            if target is None and ref in aliases:
+                target = by_id.get(aliases[ref][0])
+            if target is not None and target["type"] != "company":
+                target = None
+        target = target or companies_by_name.get(norm_name(company_name, True))
         made = by_wm.get(wm_id)
         if made is not None and made["type"] == "company" and made is not target:
             by_wm.pop(wm_id, None)
@@ -580,7 +649,9 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
     # the first lead "owns" it (wingmate_id); later ones are recorded as aliases.
     aliases = {r["ref"]: (r["node_id"], r["seen"]) for r in db.execute("SELECT ref, node_id, seen FROM wingmate_aliases")}
     lead_nodes, lead_owner, lead_stage, comment_queue = {}, {}, {}, []
-    for lead in leads:
+    no_company = {"id": None, "name": "", "owner_rep": ""}  # a Contact lead with no company found
+    # Company leads first, so a contact lead finds its company's card.
+    for lead in sorted(leads, key=lambda l: str(l.get("id")) in person_leads):
         lead_id = str(lead.get("id"))
         name = text(lead.get("name") or lead.get("identifier"))
         if not lead_id or not name:
@@ -603,8 +674,20 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         held = lead_id in held_back
         fresh = False
         node = by_wm.get(wm_id)
+        if lead_id in person_leads and not person_leads[lead_id][1]:
+            # A Contact lead with no company: its contact comes in on its own.
+            made = by_wm.pop(wm_id, None)
+            if made is not None and made["type"] == "company":  # an earlier sync made it a company
+                counts["companies_updated"] += 1
+                update(made, {"wingmate_id": ""})
+            lead_nodes[lead_id] = no_company
+            last_seen = aliases.get(wm_id, (None, ""))[1]
+            if not seen or seen != last_seen:
+                comment_queue.append((lead_id, no_company, seen, False))
+            continue
         if lead_id in person_leads:
-            node = person_lead_company(lead_id, wm_id, person_leads[lead_id], location, owner, held)
+            company_lead, company_name = person_leads[lead_id]
+            node = person_lead_company(lead_id, wm_id, company_name, location, owner, held, company_lead)
         elif node is None and wm_id in aliases and aliases[wm_id][0] in by_id:
             node = by_id[aliases[wm_id][0]]
         elif node is None:
@@ -703,7 +786,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                           "wingmate_id": wm_id, "wingmate_seen": "",
                           "wingmate_sync": json.dumps({"name": name, "email": email, "phone": phone}, sort_keys=True),
                           "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
-                if dry_run and company["id"] < 0:
+                if dry_run and (company["id"] or 0) < 0:
                     values["company_id"] = None  # the company doesn't exist yet in a preview
                 values["stage"] = stage
                 values["wingmate_sync"] = json.dumps({"name": name, "email": email, "phone": phone, "stage": stage,
@@ -722,6 +805,14 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             counts["people_updated"] += changed
         reached_map(node, held)
         lead_contacts.setdefault(lead_id, []).append((bool(contact.get("primary_contact")), node))
+
+    # A Contact lead with no company is tracked on its contact (for its notes).
+    if not dry_run:
+        for lead_id, company in lead_nodes.items():
+            people = [n for _, n in lead_contacts.get(lead_id, []) if (n["id"] or 0) > 0]
+            if company is no_company and people and aliases.get(f"lead:{lead_id}", (None,))[0] != people[0]["id"]:
+                db.execute("INSERT INTO wingmate_aliases (ref, node_id, seen) VALUES (?, ?, '') "
+                           "ON CONFLICT (ref) DO UPDATE SET node_id = excluded.node_id", (f"lead:{lead_id}", people[0]["id"]))
 
     # Who's in this pipeline now. An empty answer from Wingmate when it had leads last time
     # is more likely a hiccup than an emptied pipeline, so that keeps the old list.
@@ -765,12 +856,14 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         shared = {node_id for node_id, _ in aliases.values()}
         for lead_id, company in lead_nodes.items():
             target = note_target(lead_id, company)
-            if target is not company and company["id"] > 0 and company["id"] not in shared:
+            if target is not company and (company["id"] or 0) > 0 and company["id"] not in shared:
                 moved = db.execute("UPDATE notes SET node_id = ? WHERE node_id = ? AND external_id LIKE ?",
                                    (target["id"], company["id"], "wingmate-comment:%"))
                 counts["notes_moved"] += max(moved.rowcount or 0, 0)
         for lead_id, node, seen, primary in comment_queue:
             target = note_target(lead_id, node)
+            if not target.get("id"):
+                continue  # a Contact lead whose contact isn't here
             for comment in client.get_all(f"/leads/{lead_id}/comments"):
                 ext = f"wingmate-comment:{comment.get('id')}"
                 body = text(comment.get("text") or comment.get("body") or comment.get("comment"), 5000)

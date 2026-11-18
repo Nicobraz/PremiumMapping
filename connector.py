@@ -1171,6 +1171,7 @@ def tool_wm_lead(args):
     out = wm_lead_brief(db, data, lead, contacts_by_lead(data).get(lead_id, []), pss_links(db))
     flag = wingmate.push_flag(lead)
     out["pss_connect_push"] = "yes" if flag else "no" if flag is False else "not set"
+    out["pss_connect_card"] = wingmate.card_kind(lead) or "not set"
     info = {k: v for k, v in wingmate.custom_fields(lead) if wingmate.text(v)}
     if info:
         out["lead_info"] = info
