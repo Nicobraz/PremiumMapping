@@ -543,7 +543,7 @@ def api_ok(method, path, body=None):
 def load_map(db):
     nodes = {r["id"]: dict(r) for r in db.execute(
         "SELECT id, type, name, title, company_id, email, phone, location, tags, owner_rep, notes, stage, "
-        "priority, wingmate_id, created_at, updated_at, updated_by FROM nodes")}
+        "priority, wingmate_id, off_map, created_at, updated_at, updated_by FROM nodes")}
     return nodes
 
 
