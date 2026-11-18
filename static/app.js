@@ -3116,6 +3116,8 @@ function wingmateCounts(r, preview) {
     `${r[key]} ${(r[key] === 1 ? one : many).replace(preview ? /added|linked|updated/ : /$^/, (w) => `to be ${w}`)}`);
   if (preview && r.notes_to_check) parts.push(`notes checked on ${plural(r.notes_to_check, 'company', 'companies')}`);
   if (r.off_map) parts.push(`${plural(r.off_map, 'lead', 'leads')} kept off the map`);
+  if (r.companies_folded) parts.push(`${plural(r.companies_folded, '“Company - Person” company', '“Company - Person” companies')} ${preview ? 'to be ' : ''}folded into their company`);
+  if (r.people_merged) parts.push(`${plural(r.people_merged, 'duplicate contact', 'duplicate contacts')} ${preview ? 'to be ' : ''}merged`);
   return parts.length ? parts.join(' · ') : 'Everything already up to date';
 }
 

@@ -3,7 +3,9 @@ Sync from Wingmate into PSS Connect (and, for outbound flows, a few writes back:
 updates on a lead and stage moves; see flows.py).
 
 Wingmate leads become companies, their contacts become people, and lead
-comments become notes. On later runs only name, location, email and phone
+comments become notes. A lead named "Company - Person" (one lead per contact, linked
+to the company) isn't a company of its own: its contact goes under that company,
+and the contact's stage and owner come from it. On later runs only name, location, email and phone
 are refreshed from Wingmate, and the owner rep always follows the Wingmate lead's
 owner (Wingmate is the source of truth for who a lead belongs to). PSS-side tags,
 notes, connections and map positions are never touched, and nothing is deleted.
@@ -327,11 +329,41 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         name = text(user.get("full_name") or user.get("name"))
         return rep_by_email.get(email) or rep_by_name.get(name.lower()) or name or ACTOR
 
+    # "Company - Person" leads: Wingmate's way of tracking each contact at a company as its
+    # own lead. The part after the dash is one of the lead's contacts.
+    contacts_by_lead = {}
+    for contact in contacts:
+        contacts_by_lead.setdefault(first_id(contact.get("lead_id") or contact.get("lead")), []).append(contact)
+
+    def company_of_person_lead(lead_id, name):
+        for sep in (" - ", " \u2013 ", " \u2014 "):
+            if sep in name:
+                left, right = (part.strip() for part in name.rsplit(sep, 1))
+                if left and right and any(norm_name(text(c.get("name"))) == norm_name(right)
+                                          for c in contacts_by_lead.get(lead_id, [])):
+                    return left
+        return ""
+
+    person_leads = {}  # lead id -> the company name it belongs to
+    own_lead = {}  # a contact (by email, or name at a company) -> their own person lead
+    for lead in leads:
+        lead_id = str(lead.get("id"))
+        company_name = company_of_person_lead(lead_id, text(lead.get("name") or lead.get("identifier")))
+        if not company_name:
+            continue
+        person_leads[lead_id] = company_name
+        for contact in contacts_by_lead.get(lead_id, []):
+            email = text(contact.get("email")).lower()
+            if email:
+                own_lead.setdefault(("email", email), lead_id)
+            own_lead.setdefault(("name", norm_name(text(contact.get("name"))), norm_name(company_name, True)), lead_id)
+
     dismissed = {r["ref"] for r in db.execute("SELECT ref FROM wingmate_dismissed")}
     nodes = [dict(r) for r in db.execute(
         "SELECT id, type, name, location, email, phone, title, stage, owner_rep, company_id, wingmate_id, "
         "wingmate_seen, wingmate_sync, off_map FROM nodes")]
     by_wm = {n["wingmate_id"]: n for n in nodes if n["wingmate_id"]}
+    by_id = {n["id"]: n for n in nodes}
     companies_by_name = {}
     people_by_key, people_by_email = {}, {}
     for n in nodes:
@@ -345,6 +377,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
     counts = {"leads": len(leads), "contacts": len(contacts), "companies_added": 0, "companies_linked": 0,
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
               "notes_added": 0, "notes_moved": 0, "skipped": 0, "off_map": len(held_back), "put_on_map": 0,
+              "companies_folded": 0, "people_merged": 0,
               "stages": stages}
     ts = now()
     fake_id = [0]
@@ -394,10 +427,98 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         counts["put_on_map"] += bool(node.get("off_map"))
         update(node, {"off_map": 0, "wingmate_sync": json.dumps(snapshot, sort_keys=True)})
 
+    # Folding a record into another (cleaning up companies an earlier sync made from
+    # "Company - Person" leads): notes, connections, flows and Wingmate links move over.
+    def move_refs(old, keep):
+        db.execute("UPDATE notes SET node_id = ? WHERE node_id = ?", (keep["id"], old["id"]))
+        db.execute("UPDATE wingmate_aliases SET node_id = ? WHERE node_id = ?", (keep["id"], old["id"]))
+        db.execute("UPDATE flow_enrollments SET node_id = ? WHERE node_id = ?", (keep["id"], old["id"]))
+        existing = {(e["rel_type"], e["target_id"] if e["source_id"] == keep["id"] else e["source_id"])
+                    for e in db.execute("SELECT * FROM edges WHERE source_id = ? OR target_id = ?", (keep["id"], keep["id"]))}
+        for e in db.execute("SELECT * FROM edges WHERE source_id = ? OR target_id = ?", (old["id"], old["id"])).fetchall():
+            far = e["target_id"] if e["source_id"] == old["id"] else e["source_id"]
+            if far == keep["id"] or (e["rel_type"], far) in existing:
+                db.execute("DELETE FROM edges WHERE id = ?", (e["id"],))
+                continue
+            column = "source_id" if e["source_id"] == old["id"] else "target_id"
+            db.execute(f"UPDATE edges SET {column} = ? WHERE id = ?", (keep["id"], e["id"]))
+            existing.add((e["rel_type"], far))
+        if old.get("wingmate_id"):
+            if keep.get("wingmate_id"):
+                db.execute("INSERT INTO wingmate_aliases (ref, node_id, seen) VALUES (?, ?, '') "
+                           "ON CONFLICT (ref) DO UPDATE SET node_id = excluded.node_id", (old["wingmate_id"], keep["id"]))
+                aliases[old["wingmate_id"]] = (keep["id"], "")
+            else:
+                update(keep, {"wingmate_id": old["wingmate_id"]})
+            by_wm[old["wingmate_id"]] = keep
+        db.execute("DELETE FROM nodes WHERE id = ?", (old["id"],))
+        by_id.pop(old["id"], None)
+
+    def merge_person(dup, keep):
+        counts["people_merged"] += 1
+        if dry_run:
+            return
+        update(keep, {f: dup[f] for f in ("title", "email", "phone", "stage") if not keep.get(f) and dup.get(f)})
+        move_refs(dup, keep)
+        for index in (people_by_email, people_by_key):
+            for key in [k for k, v in index.items() if v is dup]:
+                index[key] = keep
+
+    def fold_company(old, into):
+        """Moves a company's contacts (merging any already at `into`), notes and connections
+        into another company, then removes it."""
+        counts["companies_folded"] += 1
+        if dry_run:
+            return
+        for person in [n for n in by_id.values() if n["type"] == "person" and n["company_id"] == old["id"]]:
+            key = (norm_name(person["name"]), into["id"])
+            same = people_by_key.get(key)
+            email = person["email"].strip().lower()
+            if same is None and email and people_by_email.get(email, {}).get("company_id") == into["id"]:
+                same = people_by_email[email]
+            if same is not None and same["id"] != person["id"]:
+                merge_person(person, same)
+            else:
+                update(person, {"company_id": into["id"]})
+                people_by_key[key] = person
+        tags = [t for t in (r["tags"] for r in db.execute("SELECT tags FROM nodes WHERE id IN (?, ?)", (into["id"], old["id"])))]
+        merged = list(dict.fromkeys(t.strip() for t in ",".join(tags).split(",") if t.strip()))
+        if merged:
+            db.execute("UPDATE nodes SET tags = ? WHERE id = ?", (", ".join(merged), into["id"]))
+        move_refs(old, into)
+
+    def person_lead_company(lead_id, wm_id, company_name, location, owner, held):
+        """The company a "Company - Person" lead belongs to: found by name or created, with
+        the lead recorded as one of its leads. A company an earlier sync made from the lead
+        is folded into it."""
+        target = companies_by_name.get(norm_name(company_name, True))
+        made = by_wm.get(wm_id)
+        if made is not None and made["type"] == "company" and made is not target:
+            by_wm.pop(wm_id, None)
+            if target is None:  # nothing to fold into: it becomes the company itself
+                counts["companies_updated"] += 1
+                update(made, {"name": company_name, "wingmate_id": ""})
+                target = companies_by_name[norm_name(company_name, True)] = made
+            else:
+                fold_company(made, target)
+        if target is None:
+            values = {"type": "company", "name": company_name, "location": location, "notes": "",
+                      "owner_rep": owner or "", "wingmate_id": "", "wingmate_seen": "",
+                      "wingmate_sync": json.dumps({"name": company_name, **({"off_map": 1} if held else {})}, sort_keys=True),
+                      "off_map": 1 if held else 0, "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
+            target = {**values, "id": insert(values), "email": "", "phone": "", "title": "", "company_id": None}
+            companies_by_name[norm_name(company_name, True)] = by_id[target["id"]] = target
+            counts["companies_added"] += 1
+        if aliases.get(wm_id, (None,))[0] != target["id"]:
+            if not dry_run and target["id"] > 0:
+                db.execute("INSERT INTO wingmate_aliases (ref, node_id, seen) VALUES (?, ?, '') "
+                           "ON CONFLICT (ref) DO UPDATE SET node_id = excluded.node_id", (wm_id, target["id"]))
+            aliases[wm_id] = (target["id"], "")
+        return target
+
     # Leads -> companies. Two reps' leads for the same company share one company here:
     # the first lead "owns" it (wingmate_id); later ones are recorded as aliases.
     aliases = {r["ref"]: (r["node_id"], r["seen"]) for r in db.execute("SELECT ref, node_id, seen FROM wingmate_aliases")}
-    by_id = {n["id"]: n for n in nodes}
     lead_nodes, lead_owner, lead_stage, comment_queue = {}, {}, {}, []
     for lead in leads:
         lead_id = str(lead.get("id"))
@@ -416,7 +537,9 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         held = lead_id in held_back
         fresh = False
         node = by_wm.get(wm_id)
-        if node is None and wm_id in aliases and aliases[wm_id][0] in by_id:
+        if lead_id in person_leads:
+            node = person_lead_company(lead_id, wm_id, person_leads[lead_id], location, owner, held)
+        elif node is None and wm_id in aliases and aliases[wm_id][0] in by_id:
             node = by_id[aliases[wm_id][0]]
         elif node is None:
             fresh = True
@@ -477,8 +600,12 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         email = text(contact.get("email")).lower()
         phone = text(contact.get("phone") or contact.get("phone_number")) or custom_value(contact, "phone", "mobile", "cell")
         title = custom_value(contact, "title", "position", "role") or ("Decision maker" if contact.get("primary_contact") else "")
-        stage = lead_stage.get(lead_id, "")
-        held = lead_id in held_back
+        # A contact with a "Company - Person" lead of their own takes its stage and owner
+        # from that lead, also where they're listed on the company's lead.
+        own = (own_lead.get(("email", email)) if email else None) \
+            or own_lead.get(("name", norm_name(name), norm_name(company["name"], True))) or lead_id
+        stage = lead_stage.get(own, "")
+        held = own in held_back
         node = by_wm.get(wm_id)
         merged_into = aliases.get(wm_id)
         if node is None and merged_into and merged_into[0] in by_id:
@@ -489,7 +616,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             node = node or people_by_key.get((norm_name(name), company["id"]))
             if node is not None and not node.get("wingmate_id"):
                 counts["people_linked"] += 1
-                update(node, {"wingmate_id": wm_id, **({"owner_rep": lead_owner[lead_id]} if lead_owner.get(lead_id) is not None else {})})
+                update(node, {"wingmate_id": wm_id, **({"owner_rep": lead_owner[own]} if lead_owner.get(own) is not None else {})})
                 sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage}, linking=True)
             elif node is not None and node["id"] > 0:
                 # Already here from another lead (e.g. moved from a cold outreach pipeline
@@ -500,11 +627,13 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                                "ON CONFLICT (ref) DO NOTHING", (wm_id, node["id"]))
                 aliases[wm_id] = (node["id"], "")
                 sync_fields(node, {"stage": stage})
+                if own != lead_id and lead_owner.get(own) is not None:
+                    update(node, {"owner_rep": lead_owner[own]})
             else:
                 values = {"type": "person", "name": name, "company_id": company["id"], "email": email,
                           "phone": phone, "title": title, "notes": custom_value(contact, "note", "comment"),
                           # Each contact belongs to the rep whose lead it came from.
-                          "owner_rep": lead_owner.get(lead_id) if lead_owner.get(lead_id) is not None else company.get("owner_rep", ""),
+                          "owner_rep": lead_owner.get(own) if lead_owner.get(own) is not None else company.get("owner_rep", ""),
                           "wingmate_id": wm_id, "wingmate_seen": "",
                           "wingmate_sync": json.dumps({"name": name, "email": email, "phone": phone}, sort_keys=True),
                           "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
@@ -522,8 +651,8 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             by_wm[wm_id] = node
         else:
             changed = sync_fields(node, {"name": name, "email": email, "phone": phone, "stage": stage})
-            if lead_owner.get(lead_id) is not None:  # each contact belongs to its lead's Wingmate owner
-                changed = update(node, {"owner_rep": lead_owner[lead_id]}) or changed
+            if lead_owner.get(own) is not None:  # each contact belongs to its lead's Wingmate owner
+                changed = update(node, {"owner_rep": lead_owner[own]}) or changed
             counts["people_updated"] += changed
         reached_map(node, held)
         lead_contacts.setdefault(lead_id, []).append((bool(contact.get("primary_contact")), node))
@@ -593,14 +722,18 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 db.execute("UPDATE wingmate_aliases SET seen = ? WHERE ref = ?", (seen, f"lead:{lead_id}"))
 
     changed = any(counts[k] for k in ("companies_added", "companies_linked", "companies_updated", "people_added",
-                                      "people_linked", "people_updated", "notes_added", "notes_moved", "put_on_map"))
+                                      "people_linked", "people_updated", "notes_added", "notes_moved", "put_on_map",
+                                      "companies_folded", "people_merged"))
     if changed and not dry_run:
         summary = (f"Wingmate sync{f' ({pipeline_name})' if pipeline_name else ''}: +{counts['companies_added']} companies, +{counts['people_added']} people, "
                    f"+{counts['notes_added']} notes, "
                    + (f"{counts['notes_moved']} notes moved to contacts, " if counts["notes_moved"] else "") +
                    f"{counts['companies_updated'] + counts['people_updated']} updated, "
                    f"{counts['companies_linked'] + counts['people_linked']} linked"
-                   + (f", {counts['put_on_map']} put on the map" if counts["put_on_map"] else ""))
+                   + (f", {counts['put_on_map']} put on the map" if counts["put_on_map"] else "")
+                   + (f", {counts['companies_folded']} \"Company - Person\" companies folded into their company"
+                      if counts["companies_folded"] else "")
+                   + (f", {counts['people_merged']} duplicate contacts merged" if counts["people_merged"] else ""))
         db.execute("INSERT INTO activity (ts, actor, action, summary) VALUES (?, ?, ?, ?)",
                    (ts, ACTOR, "sync", summary))
         tools["bump_version"](db)
