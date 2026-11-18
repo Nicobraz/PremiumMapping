@@ -562,6 +562,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 /* ---------- Wingmate paused ---------- */
+.wm-reset { margin: 10px 0 4px; }
+.wm-reset p { margin: 6px 0 0; font-size: 12px; }
 .pill-paused { background: #fff4e5; color: #8a4b00; }
 .wm-paused { margin: 6px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid #f5c98a; background: #fff4e5; color: #8a4b00; font-size: 13px; }
 @media (prefers-color-scheme: dark) {

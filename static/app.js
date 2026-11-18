@@ -3164,9 +3164,10 @@ function wingmateSectionHtml() {
       <button type="button" class="btn btn-sm btn-ghost" data-wm-act="edit">Settings</button>
       <button type="button" class="btn btn-sm btn-danger-ghost" data-wm-act="disconnect">Disconnect</button>
     </div>
-    <details class="wm-cron"><summary>Start the map over from Wingmate</summary>
-      <p class="muted">Takes every company and contact off the map and removes every connection, then the sync puts back only leads marked <b>PSS Connect: Yes</b> in Wingmate. Nothing is deleted: everything stays in search and the lists with its notes. A backup is saved first.</p>
-      <button type="button" class="btn btn-sm btn-danger-ghost" data-wm-act="reset-map">Reset the map…</button></details>
+    <div class="wm-reset">
+      <button type="button" class="btn btn-sm btn-danger-ghost" data-wm-act="reset-map">Reset the map to what's marked in Wingmate…</button>
+      <p class="muted">Takes every company and contact off the map and removes every connection, then the sync puts back only leads marked <b>PSS Connect: Yes</b> (and what's linked to a company marked Yes + Company). Nothing is deleted: everything stays in search and the lists. A backup is saved first.</p>
+    </div>
     ${extraPipelinesHtml(w)}
     ${w.cron_url ? `<details class="wm-cron"><summary>Sync even when nobody has the site open</summary>
       <p class="muted">The free server sleeps after 15 minutes without visitors. Add this link to a free scheduler such as cron-job.org, set to every 15 minutes, to keep syncing around the clock:</p>
