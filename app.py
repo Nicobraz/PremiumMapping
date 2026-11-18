@@ -369,9 +369,10 @@ def _init_schema(db):
     db.execute("INSERT INTO settings (key, value) VALUES ('wingmate_paused', '1') ON CONFLICT (key) DO NOTHING")
     # Rep views saved before the org-chart layout was fixed are scattered: clear them once
     # so each rep's view is laid out fresh, as a compact chart of just their records.
-    if not db.execute("SELECT 1 FROM settings WHERE key = 'view_positions_reset_v1'").fetchone():
+    # and again when views became a live grid until a rep saves a layout (v2).
+    if not db.execute("SELECT 1 FROM settings WHERE key = 'view_positions_reset_v2'").fetchone():
         db.execute("DELETE FROM view_positions")
-        db.execute("INSERT INTO settings (key, value) VALUES ('view_positions_reset_v1', '1')")
+        db.execute("INSERT INTO settings (key, value) VALUES ('view_positions_reset_v2', '1')")
     secret = db.execute("SELECT value FROM settings WHERE key = 'session_secret'").fetchone()["value"]
     db.commit()
     return secret
@@ -964,7 +965,7 @@ def delete_node(node_id):
 def view_key():
     """The rep view a position request is about (lowercase rep name), '' for Team view,
     or None when the caller may not use it: reps use their own view, admins any."""
-    raw = (request.get_json(silent=True) or {}).get("view") if request.method != "GET" else request.args.get("view")
+    raw = request.args.get("view") if request.method in ("GET", "DELETE") else (request.get_json(silent=True) or {}).get("view")
     view = str(raw or "").strip()
     if not view:
         return ""
@@ -972,6 +973,20 @@ def view_key():
     if is_admin() or (rep and rep["name"].strip().lower() == view.lower()):
         return view.lower()
     return None
+
+
+@app.delete("/api/view-positions")
+def reset_view_positions():
+    """Removes a rep view's saved layout, so it goes back to the live standard grid."""
+    view = view_key()
+    if view is None:
+        return bad("That's another rep's view", 403)
+    if not view:
+        return bad("Pick a rep's view")
+    db = get_db()
+    db.execute("DELETE FROM view_positions WHERE view_rep = ?", (view,))
+    db.commit()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/view-positions")

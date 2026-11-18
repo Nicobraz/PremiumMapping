@@ -66,7 +66,7 @@ const state = {
   unsaved: new Map(),  // dots moved but not saved yet (id -> position)
   pipelines: [],  // connected Wingmate pipelines: { id, name, nodes: [record ids] }
   pipeline: storeGet('pss.pipeline'),  // the pipeline picked to show, '' for all
-  pipelinePos: null,  // the grid shown while a pipeline is picked (not saved)
+  gridPos: null,  // the live standard grid, when the view has no saved layout or a pipeline is picked
   viewSets: null,       // { visible } node ids when a rep view is on
   mapIds: null,         // node ids drawn on the map (the rest are saved off the map)
   tagFilter: '',
@@ -80,7 +80,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
 const hasPos = (n) => n && n.x != null && n.y != null;
 // Where a record sits right now: its spot in the rep's view being shown, else its
 // Team view spot (shared by everyone).
-const posFor = (n) => state.pipelinePos?.get(n.id) || state.unsaved?.get(n.id) || state.viewPos?.get(n.id) || (hasPos(n) ? { x: n.x, y: n.y } : undefined);
+const posFor = (n) => state.unsaved?.get(n.id) || state.gridPos?.get(n.id) || state.viewPos?.get(n.id) || (hasPos(n) ? { x: n.x, y: n.y } : undefined);
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 const splitTags = (s) => String(s || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
 // Every company should have a tag; one without shows (and filters as) "(unknown)".
@@ -639,40 +639,112 @@ function placeUnpositioned() {
   savePositions(updates, '');
 }
 
-// Standard layout: a grid. Each company gets a cell of the same width, with its people
-// beneath it in rows of 3; the cells line up in rows and columns, sized to the screen.
-// Contacts without a company go in a block at the bottom. Most recently added or edited
-// comes first: companies left to right, row by row (a company counts as edited when any
-// of its people is). Records that are connected are kept side by side, so their lines
-// are short and don't run through other dots.
-const ORG = { personGap: 140, perRow: 3, firstGap: 90, rowGap: 70, bandGap: 90, cellPad: 100 };
-ORG.colWidth = (ORG.perRow - 1) * ORG.personGap + ORG.cellPad;  // one grid cell
+// Standard layout: a grid of columns. Each company has the same width, with its people
+// beneath it in rows of 3; companies stack down the columns, each going in the
+// shortest column, so there are no empty gaps. The number of columns fits the screen.
+// Contacts without a company go in a block at the bottom. Companies and people go A to Z,
+// except that records that are connected are kept next to each other, so their lines
+// stay short.
+const ORG = { personGap: 140, perRow: 3, firstGap: 90, rowGap: 70, bandGap: 70, cellPad: 80 };
+ORG.colWidth = (ORG.perRow - 1) * ORG.personGap + ORG.cellPad;  // one column
+
+// Orders items (A to Z), but walks each group of connected items together so
+// every item sits next to one it's linked to.
+function chainOrder(items, links, newer) {
+  const byId = new Map(items.map((n) => [n.id, n]));
+  const seen = new Set();
+  const out = [];
+  for (const start of [...items].sort(newer)) {
+    const stack = [start];
+    while (stack.length) {
+      const n = stack.pop();
+      if (seen.has(n.id)) continue;
+      seen.add(n.id);
+      out.push(n);
+      const next = [...(links.get(n.id) || [])].map((id) => byId.get(id))
+        .filter((m) => m && !seen.has(m.id)).sort(newer).reverse();
+      stack.push(...next);  // the newest neighbour comes off the stack first
+    }
+  }
+  return out;
+}
+
+function orgChartPlan() {
+  const nodes = mapNodes();
+  const companyIds = new Set(nodes.filter((n) => n.type === 'company').map((n) => n.id));
+  const staffOf = new Map([...companyIds].map((id) => [id, []]));
+  const loose = [];
+  for (const n of nodes) {
+    if (n.type !== 'person') continue;
+    if (staffOf.has(n.company_id)) staffOf.get(n.company_id).push(n);
+    else loose.push(n);
+  }
+  const homeOf = (id) => {
+    const n = state.nodes.get(id);
+    if (!n) return null;
+    if (n.type === 'company') return n.id;
+    return staffOf.has(n.company_id) ? n.company_id : 'loose';
+  };
+  const peopleLinks = new Map();
+  const companyLinks = new Map();
+  const link = (map, a, b) => {
+    if (!map.has(a)) map.set(a, new Set());
+    if (!map.has(b)) map.set(b, new Set());
+    map.get(a).add(b);
+    map.get(b).add(a);
+  };
+  for (const e of state.edges.values()) {
+    const [a, b] = [homeOf(e.source_id), homeOf(e.target_id)];
+    if (a == null || b == null) continue;
+    if (a === b) link(peopleLinks, e.source_id, e.target_id);           // same company (or both loose)
+    else if (a !== 'loose' && b !== 'loose') link(companyLinks, a, b);  // across companies
+  }
+  // A-Z, so the live grid doesn't reshuffle every time someone edits a record.
+  const companies = chainOrder([...companyIds].map((id) => state.nodes.get(id)), companyLinks, byName);
+  return {
+    columns: companies.map((c) => ({ company: c, staff: chainOrder(staffOf.get(c.id), peopleLinks, byName) })),
+    loose: chainOrder(loose, peopleLinks, byName),
+  };
+}
+
+// Tries a range of row widths and keeps the one whose overall shape best matches the screen.
+function orgChartPositions(plan = orgChartPlan()) {
+  return bestOrgChart(plan).pos;
+}
+
+function bestOrgChart(plan) {
+  const aspect = Math.max(0.5, cy.width() / Math.max(1, cy.height()));
+  let best = null;
+  for (let width = 600; width <= 8000; width += 200) {
+    const layout = orgChartFor(plan, width);
+    const score = Math.abs(Math.log((layout.width / Math.max(layout.height, 1)) / aspect));
+    if (!best || score < best.score - 0.01) best = { ...layout, score };
+  }
+  return best;
+}
 
 function orgChartFor(plan, maxWidth) {
   const pos = {};
-  const cols = Math.max(1, Math.floor(maxWidth / ORG.colWidth));
+  const cols = Math.max(1, Math.min(plan.columns.length, Math.floor(maxWidth / ORG.colWidth)));
   const depth = (staff) => (staff.length ? ORG.firstGap + (Math.ceil(staff.length / ORG.perRow) - 1) * ORG.rowGap : 0);
-  let y = 0;
-  let bottom = 0;
-  for (let start = 0; start < plan.columns.length; start += cols) {
-    const row = plan.columns.slice(start, start + cols);
-    row.forEach(({ company, staff }, c) => {
-      const middle = c * ORG.colWidth + ORG.colWidth / 2;
-      pos[company.id] = { x: middle, y };
-      staff.forEach((p, i) => {
-        const line = Math.floor(i / ORG.perRow);
-        const inRow = Math.min(ORG.perRow, staff.length - line * ORG.perRow);  // a short last row is centred too
-        pos[p.id] = { x: middle + ((i % ORG.perRow) - (inRow - 1) / 2) * ORG.personGap,
-                      y: y + ORG.firstGap + line * ORG.rowGap };
-      });
+  const heights = new Array(cols).fill(0);
+  for (const { company, staff } of plan.columns) {
+    const c = heights.indexOf(Math.min(...heights));
+    const y = heights[c];
+    const middle = c * ORG.colWidth + ORG.colWidth / 2;
+    pos[company.id] = { x: middle, y };
+    staff.forEach((p, i) => {
+      const line = Math.floor(i / ORG.perRow);
+      const inRow = Math.min(ORG.perRow, staff.length - line * ORG.perRow);  // a short last row is centred too
+      pos[p.id] = { x: middle + ((i % ORG.perRow) - (inRow - 1) / 2) * ORG.personGap,
+                    y: y + ORG.firstGap + line * ORG.rowGap };
     });
-    bottom = y + Math.max(...row.map((c) => depth(c.staff)));
-    y = bottom + ORG.rowGap + ORG.bandGap;
+    heights[c] = y + depth(staff) + ORG.rowGap + ORG.bandGap;
   }
-  const usedCols = Math.min(cols, Math.max(1, plan.columns.length));
-  let widest = usedCols * ORG.colWidth;
+  let widest = cols * ORG.colWidth;
+  let bottom = plan.columns.length ? Math.max(...heights) - ORG.rowGap - ORG.bandGap : 0;
   if (plan.loose.length) {
-    const top = plan.columns.length ? y : 0;
+    const top = plan.columns.length ? bottom + ORG.rowGap + ORG.bandGap : 0;
     const perRow = Math.max(4, Math.floor(Math.max(widest, maxWidth) / ORG.personGap));
     plan.loose.forEach((p, i) => {
       pos[p.id] = { x: ORG.personGap / 2 + (i % perRow) * ORG.personGap, y: top + Math.floor(i / perRow) * ORG.rowGap };
@@ -693,12 +765,13 @@ function viewChartPositions() {
                              loose: plan.loose.filter(mine) });
 }
 
+// Arranges the shared positions on the records themselves (used before any rep exists,
+// and for records that have none yet). Reps' views use the live grid instead.
 function runLayout(randomize) {
-  if (state.pipeline) { applyView(); fitView(); return; }  // a pipeline's grid is never saved
-  const inRepView = !!(viewRep() && state.viewPos);
-  const eles = inRepView ? cy.nodes().not('.view-hidden') : cy.nodes();
+  if (viewRep() || state.pipeline) { layoutView(); fitView(); return; }
+  const eles = cy.nodes();
   if (!eles.length) return;
-  const target = inRepView ? viewChartPositions() : orgChartPositions();
+  const target = orgChartPositions();
   const layout = eles.layout({
     name: 'preset',
     positions: (el) => target[el.data('nid')] || el.position(),
@@ -744,7 +817,7 @@ cy.on('render', scheduleTagPositions);
 cy.on('dragfree', 'node', (evt) => {
   const el = evt.target;
   const p = el.position();
-  if (state.pipelinePos) { state.pipelinePos.set(el.data('nid'), { x: p.x, y: p.y }); return; }  // not saved
+  if (state.pipeline) { state.gridPos?.set(el.data('nid'), { x: p.x, y: p.y }); return; }  // a pipeline's grid isn't saved
   state.unsaved.set(el.data('nid'), { x: Math.round(p.x), y: Math.round(p.y) });
   renderLayoutBar();
 });
@@ -757,11 +830,17 @@ function renderLayoutBar() {
 
 function saveLayout() {
   if (!state.unsaved.size) return;
-  const batch = [...state.unsaved].map(([id, p]) => rememberPos(id, p));
+  // Saving over the live grid keeps the whole arrangement, not just the moved dots.
+  const v = state.viewSets;
+  const spots = state.gridPos && v
+    ? mapNodes().filter((n) => v.visible.has(n.id)).map((n) => [n.id, posFor(n)]).filter(([, p]) => p)
+    : [...state.unsaved];
+  const batch = spots.map(([id, p]) => rememberPos(id, p));
   state.unsaved.clear();
   renderLayoutBar();
+  layoutView();
   savePositions(batch);
-  toast(viewRep() ? 'Layout saved for your view' : 'Layout saved for everyone');
+  toast(viewRep() ? `Layout saved for ${state.view === 'mine' ? 'your' : `${viewRep()}'s`} view` : 'Layout saved');
 }
 
 function undoLayout() {
@@ -951,16 +1030,7 @@ function applyView() {
   if (state.pipeline && !pipelineMembers()) state.pipeline = '';  // that pipeline was removed
   state.viewSets = rep || state.pipeline ? computeViewSets(rep) : null;
   const v = state.viewSets;
-  const hadGrid = !!state.pipelinePos;
-  state.pipelinePos = null;
-  if (state.pipeline) state.pipelinePos = new Map(Object.entries(viewChartPositions()).map(([id, p]) => [Number(id), p]));
-  if (state.pipelinePos || hadGrid) {
-    cy.batch(() => cy.nodes().forEach((el) => {
-      const n = state.nodes.get(el.data('nid'));
-      const p = n && posFor(n);
-      if (p && !el.grabbed()) el.position(p);
-    }));
-  }
+  layoutView();
   cy.batch(() => {
     cy.nodes().forEach((el) => {
       const id = el.data('nid');
@@ -972,6 +1042,26 @@ function applyView() {
   renderPipelineSelect();
   $('#view-key').hidden = !v || ![...v.visible].some((id) => !v.mine.has(id));
   if ((rep || '').toLowerCase() !== (state.viewPosFor || '')) loadViewPositions();
+}
+
+// The standard grid is worked out live from the records in the view, so it stays tidy
+// as leads come and go. Once a rep saves their own layout, that's used instead (new
+// records go beside it); ✣ removes it and goes back to the live grid. A picked
+// pipeline always shows the live grid of its records, and isn't saved.
+function usesGrid() {
+  return !!state.pipeline || (!!viewRep() && !state.viewPos?.size);
+}
+
+function layoutView() {
+  const hadGrid = !!state.gridPos;
+  state.gridPos = null;
+  if (state.viewSets && usesGrid()) state.gridPos = new Map(Object.entries(viewChartPositions()).map(([id, p]) => [Number(id), p]));
+  if (!state.gridPos && !hadGrid) return;
+  cy.batch(() => cy.nodes().forEach((el) => {
+    const n = state.nodes.get(el.data('nid'));
+    const p = n && posFor(n);
+    if (p && !el.grabbed()) el.position(p);
+  }));
 }
 
 // ---------- each rep's view keeps its own arrangement ----------
@@ -1000,12 +1090,14 @@ async function loadViewPositions() {
 }
 
 function applyViewPositions() {
+  layoutView();
   cy.batch(() => cy.nodes().forEach((el) => {
     const n = state.nodes.get(el.data('nid'));
     const p = n && posFor(n);
     if (p && !el.grabbed()) el.position(p);
   }));
-  if (!placeViewMissing()) fitView();
+  placeViewMissing();
+  fitView();
   scheduleBends();
   scheduleTagPositions();
 }
@@ -1016,16 +1108,14 @@ function fitView() {
   if (eles.length) moveMap({ fit: { eles, padding: 60 } }, 350);
 }
 
-// The rep's records with no spot in their view yet: the first time, arrange the whole
-// view; after that, a new company goes beside the rest and a new contact under its
-// company. Returns true when it arranged the whole view.
+// In a saved layout, records with no spot yet: a new company goes beside the rest and a
+// new contact under its company.
 function placeViewMissing() {
   const v = state.viewSets;
-  if (!state.viewPos || !v || !viewRep() || state.pipeline) return false;
+  if (usesGrid() || !v || !viewRep()) return false;
   const all = mapNodes().filter((n) => v.visible.has(n.id));
   const missing = all.filter((n) => !state.viewPos.has(n.id));
   if (!missing.length) return false;
-  if (missing.length === all.length) { runLayout(false); return true; }
   const placed = all.filter((n) => state.viewPos.has(n.id)).map((n) => state.viewPos.get(n.id));
   const right = Math.max(...placed.map((p) => p.x)) + 260;
   const top = Math.min(...placed.map((p) => p.y));
@@ -3473,16 +3563,22 @@ $('#btn-directory').addEventListener('click', () => {
 $('#btn-zoom-in').addEventListener('click', () => cy.animate({ zoom: { level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } } }, { duration: 150 }));
 $('#btn-zoom-out').addEventListener('click', () => cy.animate({ zoom: { level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } } }, { duration: 150 }));
 $('#btn-fit').addEventListener('click', () => cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 }));
-$('#btn-layout').addEventListener('click', () => {
-  if (state.pipeline) { runLayout(false); return; }  // just tidies the pipeline's grid
+$('#btn-layout').addEventListener('click', async () => {
   const rep = viewRep();
-  const ask = rep
-    ? `Put ${state.view === 'mine' ? 'your' : `${rep}'s`} view back in the standard grid? Only this view changes.`
-    : 'Arrange the whole map in the standard grid? This moves everyone\'s dots in Team view.';
-  if (!confirm(ask)) return;
-  state.unsaved.clear();
-  renderLayoutBar();
-  runLayout(false);
+  if (!rep || usesGrid()) {  // already the live grid (or no reps yet): just tidy it
+    state.unsaved.clear();
+    renderLayoutBar();
+    runLayout(false);
+    return;
+  }
+  if (!confirm(`Put ${state.view === 'mine' ? 'your' : `${rep}'s`} view back in the standard grid? The saved layout for this view is removed.`)) return;
+  try {
+    await api('DELETE', `/api/view-positions?view=${encodeURIComponent(rep.toLowerCase())}`);
+    state.unsaved.clear();
+    renderLayoutBar();
+    state.viewPos = new Map();
+    applyViewPositions();
+  } catch (err) { toast(err.message, true); }
 });
 $('#empty').addEventListener('click', (evt) => {
   const which = evt.target.closest('[data-empty]')?.dataset.empty;
