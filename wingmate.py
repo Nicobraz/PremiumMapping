@@ -509,7 +509,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
               "notes_added": 0, "notes_moved": 0, "skipped": 0, "off_map": len(held_back), "put_on_map": 0,
               "companies_folded": 0, "people_merged": 0,
-              "push_yes": 0, "push_field_seen": 0, "not_pushed": 0,
+              "push_yes": 0, "push_field_seen": 0, "not_pushed": 0, "taken_off_map": 0,
               "stages": stages}
     ts = now()
     fake_id = [0]
@@ -554,10 +554,32 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             snapshot = json.loads(node.get("wingmate_sync") or "{}")
         except ValueError:
             return
-        if held or not snapshot.pop("off_map", None):
+        if held or snapshot.get("unpushed") or not snapshot.pop("off_map", None):
             return
         counts["put_on_map"] += bool(node.get("off_map"))
         update(node, {"off_map": 0, "wingmate_sync": json.dumps(snapshot, sort_keys=True)})
+
+    def apply_push(node, pushed, held):
+        """Only leads marked "PSS Connect: Yes" are drawn on the map. A record whose lead
+        isn't is taken off once (a rep can put it back); it comes back on when its lead is
+        marked Yes (and has reached the pipeline's map stage)."""
+        if not node.get("id") or node["id"] < 0:
+            return
+        try:
+            snapshot = json.loads(node.get("wingmate_sync") or "{}")
+        except ValueError:
+            snapshot = {}
+        if pushed:
+            if not snapshot.pop("unpushed", None):
+                return
+            if held:
+                snapshot["off_map"] = 1  # goes on when the lead reaches the map stage
+            counts["put_on_map"] += bool(node.get("off_map")) and not held
+            update(node, {"wingmate_sync": json.dumps(snapshot, sort_keys=True), **({} if held else {"off_map": 0})})
+        elif not snapshot.get("unpushed"):
+            snapshot["unpushed"] = 1
+            counts["taken_off_map"] += not node.get("off_map")
+            update(node, {"off_map": 1, "wingmate_sync": json.dumps(snapshot, sort_keys=True)})
 
     # Folding a record into another (cleaning up companies an earlier sync made from
     # "Company - Person" leads): notes, connections, flows and Wingmate links move over.
@@ -700,6 +722,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
     lead_at = {str(l.get("id")): as_iso(l.get("updated_at") or l.get("actioned_at")) if (l.get("updated_at") or l.get("actioned_at")) else ""
                for l in leads}
     touched = []  # names of records whose details changed, for the activity feed
+    pushed = {str(l.get("id")): bool(push_flag(l)) for l in leads}
 
     def lead_wins(node, at):
         try:
@@ -717,6 +740,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         """Stage and owner from the person's lead, when it's the most recent one."""
         if not lead_wins(node, lead_at.get(own, "")):
             return False
+        apply_push(node, pushed.get(own, False), own in held_back)
         # The stage can't be edited in PSS Connect, so it always follows the lead.
         changed = False
         if stage and node.get("stage") != stage:
@@ -805,6 +829,8 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 changed = update(node, {"owner_rep": owner}) or changed  # shared company: fill a blank only
             counts["companies_updated"] += changed
         reached_map(node, held)
+        if primary:
+            apply_push(node, pushed[lead_id], held)
         lead_nodes[lead_id] = node
         # Re-read comments only when the lead has new activity (or no timestamp to tell).
         last_seen = node.get("wingmate_seen") if primary else aliases.get(wm_id, (None, ""))[1]
@@ -869,9 +895,11 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 if dry_run and (company["id"] or 0) < 0:
                     values["company_id"] = None  # the company doesn't exist yet in a preview
                 values["stage"] = stage
+                unpushed = not pushed.get(own, False)
                 values["wingmate_sync"] = json.dumps({"name": name, "email": email, "phone": phone, "stage": stage,
-                                                      **({"off_map": 1} if held else {})}, sort_keys=True)
-                values["off_map"] = 1 if held else 0
+                                                      **({"off_map": 1} if held else {}),
+                                                      **({"unpushed": 1} if unpushed else {})}, sort_keys=True)
+                values["off_map"] = 1 if held or unpushed else 0
                 node = {**values, "id": insert(values)}
                 people_by_key[(norm_name(name), company["id"])] = node
                 if email:
@@ -963,7 +991,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
 
     changed = any(counts[k] for k in ("companies_added", "companies_linked", "companies_updated", "people_added",
                                       "people_linked", "people_updated", "notes_added", "notes_moved", "put_on_map",
-                                      "companies_folded", "people_merged"))
+                                      "companies_folded", "people_merged", "taken_off_map"))
     if changed and not dry_run:
         summary = (f"Wingmate sync{f' ({pipeline_name})' if pipeline_name else ''}: +{counts['companies_added']} companies, +{counts['people_added']} people, "
                    f"+{counts['notes_added']} notes, "
@@ -971,6 +999,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                    f"{counts['companies_updated'] + counts['people_updated']} updated, "
                    f"{counts['companies_linked'] + counts['people_linked']} linked"
                    + (f", {counts['put_on_map']} put on the map" if counts["put_on_map"] else "")
+                   + (f", {counts['taken_off_map']} not marked PSS Connect: Yes taken off the map" if counts["taken_off_map"] else "")
                    + (f", {counts['companies_folded']} \"Company - Person\" companies folded into their company"
                       if counts["companies_folded"] else "")
                    + (f", {counts['people_merged']} duplicate contacts merged" if counts["people_merged"] else "")

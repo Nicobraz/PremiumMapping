@@ -2415,6 +2415,40 @@ def pause_wingmate():
     return jsonify(wingmate_status(db))
 
 
+@app.post("/api/wingmate/reset-map")
+@admin_only
+def reset_map_to_wingmate():
+    """Starts the map over from Wingmate: a backup is saved, every connection is removed and
+    every record is taken off the map (none is deleted; all stay searchable). The sync then
+    puts back the ones whose Wingmate lead is marked "PSS Connect: Yes"."""
+    db = get_db()
+    if (request.get_json(silent=True) or {}).get("confirm") != "RESET":
+        return bad("Type RESET to confirm")
+    backup_id = save_backup(db, "before map reset")
+    edges = db.execute("SELECT COUNT(*) AS n FROM edges").fetchone()["n"]
+    db.execute("DELETE FROM edges")
+    rows = db.execute("SELECT id, wingmate_id, wingmate_sync FROM nodes").fetchall()
+    for r in rows:
+        if r["wingmate_id"]:
+            try:
+                snapshot = json.loads(r["wingmate_sync"] or "{}")
+            except ValueError:
+                snapshot = {}
+            snapshot["unpushed"] = 1  # back on once the sync sees its lead marked Yes
+            snapshot.pop("off_map", None)
+            db.execute("UPDATE nodes SET off_map = 1, wingmate_sync = ? WHERE id = ?",
+                       (json.dumps(snapshot, sort_keys=True), r["id"]))
+        else:
+            db.execute("UPDATE nodes SET off_map = 1 WHERE id = ?", (r["id"],))
+    db.execute("DELETE FROM view_positions")
+    log(db, "wingmate", f"Reset the map to Wingmate leads marked PSS Connect: Yes "
+                        f"({len(rows)} records taken off the map, {edges} connections removed; backup saved first)")
+    bump_version(db)
+    db.commit()
+    started = not wingmate_paused(db) and bool(wingmate_pipelines(db)) and start_wingmate_sync()
+    return jsonify({"backup_id": backup_id, "records": len(rows), "connections_removed": edges, "sync_started": bool(started)})
+
+
 @app.post("/api/wingmate/sync")
 @admin_only
 def trigger_wingmate_sync():

@@ -3178,6 +3178,9 @@ function wingmateSectionHtml() {
       <button type="button" class="btn btn-sm btn-ghost" data-wm-act="edit">Settings</button>
       <button type="button" class="btn btn-sm btn-danger-ghost" data-wm-act="disconnect">Disconnect</button>
     </div>
+    <details class="wm-cron"><summary>Start the map over from Wingmate</summary>
+      <p class="muted">Takes every company and contact off the map and removes every connection, then the sync puts back only leads marked <b>PSS Connect: Yes</b> in Wingmate. Nothing is deleted: everything stays in search and the lists with its notes. A backup is saved first.</p>
+      <button type="button" class="btn btn-sm btn-danger-ghost" data-wm-act="reset-map">Reset the map…</button></details>
     ${extraPipelinesHtml(w)}
     ${w.cron_url ? `<details class="wm-cron"><summary>Sync even when nobody has the site open</summary>
       <p class="muted">The free server sleeps after 15 minutes without visitors. Add this link to a free scheduler such as cron-job.org, set to every 15 minutes, to keep syncing around the clock:</p>
@@ -3285,6 +3288,14 @@ async function handleWingmateAction(act) {
       renderWingmateSection();
       loadWmSync();
       toast(act === 'pause' ? 'Wingmate syncing paused' : 'Wingmate syncing resumed. It syncs within 15 minutes, or use Sync now.');
+    } else if (act === 'reset-map') {
+      const typed = prompt('This takes everything off the map and removes every connection (a backup is saved first). Type RESET to continue.');
+      if (typed !== 'RESET') return;
+      const r = await api('POST', '/api/wingmate/reset-map', { confirm: 'RESET' });
+      await sync();
+      toast(`Map reset: ${plural(r.connections_removed, 'connection', 'connections')} removed. ${r.sync_started ? 'Syncing now: leads marked Yes come back in a minute or two.' : 'Run Sync now (or resume Wingmate) to bring back leads marked Yes.'}`);
+      state.wingmate = await api('GET', '/api/wingmate/status');
+      renderWingmateSection();
     } else if (act === 'disconnect') {
       if (!confirm('Disconnect Wingmate? Companies and people already synced stay on the map.')) return;
       state.wingmate = await api('POST', '/api/wingmate/settings', { disconnect: true });
