@@ -1646,7 +1646,7 @@ function actionsHtml(n) {
     btns.push('<button class="btn btn-sm btn-primary" data-act="add-person-here">+ Add person</button>');
     if (state.me || state.isAdmin) btns.push('<button class="btn btn-sm" data-act="add-existing" title="Put a contact who\'s already in PSS Connect at this company">+ Add existing contact</button>');
   }
-  if (n.type === 'person' && canEditNode(n) && !n.wingmate_id) {  // a Wingmate contact's company is set in Wingmate
+  if (n.type === 'person' && canEditNode(n)) {
     btns.push(`<button class="btn btn-sm" data-act="move-company">${n.company_id != null ? 'Change company' : 'Add to a company'}</button>`);
   }
   if (n.email) btns.push(`<a class="btn btn-sm" href="mailto:${esc(n.email)}">Email</a>`);
@@ -1845,7 +1845,7 @@ function addExistingHtml(n) {
 
 function addExistingListHtml(n) {
   const words = state.addExistingQuery.toLowerCase().split(/\s+/).filter(Boolean);
-  const pool = [...state.nodes.values()].filter((p) => p.type === 'person' && p.company_id !== n.id && canEditNode(p) && !p.wingmate_id);
+  const pool = [...state.nodes.values()].filter((p) => p.type === 'person' && p.company_id !== n.id && canEditNode(p));
   const matches = pool.filter((p) => {
     const hay = [p.name, p.title, p.email, companyOf(p)?.name].join(' ').toLowerCase();
     return words.every((w) => hay.includes(w));
@@ -2141,9 +2141,9 @@ function showDuplicateWarning(form, err, isNew) {
 
 // ----- edit forms -----
 
-// A Wingmate record's details come from Wingmate and are read-only here; only the About
-// summary can change (tags, notes and connections are on the card).
-const WINGMATE_FIELDS = ['name', 'title', 'email', 'phone', 'location', 'stage'];
+// On a Wingmate record the pipeline stage (and owner) follow Wingmate; everything else can
+// be tidied here, and an edit sticks until that field changes in Wingmate.
+const WINGMATE_FIELDS = ['stage'];
 
 function nodeFormHtml(n, isNew) {
   const companies = [...state.nodes.values()].filter((c) => c.type === 'company').sort(byName);
@@ -2152,12 +2152,12 @@ function nodeFormHtml(n, isNew) {
     `<label>${label}<input name="${name}" value="${esc(n[name])}" ${locked && WINGMATE_FIELDS.includes(name) ? 'readonly class="locked"' : attrs}></label>`;
   const person = n.type === 'person';
   return `<form class="form" data-form="node">
-    ${locked ? '<p class="wingmate-lock">From Wingmate: name, contact details, location, stage, company and owner are changed in Wingmate, and the next sync updates them here. You can edit the About summary.</p>' : ''}
+    ${locked ? '<p class="wingmate-lock">From Wingmate: the owner and pipeline stage are changed in Wingmate. You can tidy everything else here; an edit sticks until that field changes in Wingmate.</p>' : ''}
     ${field('name', 'Name', `required maxlength="300" autocomplete="off" placeholder="${person ? 'Jane Smith' : 'Acme Corp'}"`)}
     <div class="dup-hint" data-dup-hint role="status" hidden></div>
     ${person ? field('title', 'Title / role', 'maxlength="300" placeholder="VP of Operations"') : ''}
     ${person ? field('stage', 'Pipeline stage', 'list="stage-list" maxlength="60" autocomplete="off" placeholder="e.g. Meeting Set"') : ''}
-    ${person ? `<label>Company<select name="company_id" ${locked ? 'disabled class="locked"' : ''}>
+    ${person ? `<label>Company<select name="company_id">
         <option value="">None</option>
         ${companies.map((c) => `<option value="${c.id}" ${c.id === n.company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
       </select></label>` : ''}

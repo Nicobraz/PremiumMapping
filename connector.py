@@ -55,9 +55,9 @@ companies), connections between records, and notes. You are working as the signe
 - Reps can edit only records assigned to them. On anyone's record they can still add notes,
   company tags, connections and the high-priority flag.
 - Who a record belongs to is set in Wingmate and can't be changed here, not even by an admin:
-  to move a lead, reassign it in Wingmate. Records that came from Wingmate also get their name,
-  title, email, phone, location, stage and company from Wingmate, so change those there; here
-  only their About summary, tags, notes, connections and the high-priority flag can change.
+  to move a lead, reassign it in Wingmate. A record from Wingmate takes its pipeline stage from
+  Wingmate (change that there); its name, details and company can be tidied here, and an edit
+  sticks until that field changes in Wingmate.
 - Nothing can be deleted through this connector; tell the rep to do that in the PSS Connect app.
 - Wingmate (the team's field-sales app) syncs into PSS Connect every 15 minutes. The Wingmate
   tools read it live and are read-only.
@@ -1252,7 +1252,7 @@ TOOLS = [
             ["name"])),
     ("update_record", "Edit a record", WRITE, tool_update,
      "Change fields on a company or contact the rep owns (admins: any record). Only the fields given change. "
-     "Records from Wingmate: only about and on_map can change; the rest is changed in Wingmate. "
+     "Records from Wingmate: the stage can't change here (it follows Wingmate's pipeline). "
      "The owner can't be changed here (it's set in Wingmate). For tags use update_company_tags; for dated updates use add_note.",
      schema({"id": ID, "name": S, **CONTACT_FIELDS,
              "company": {"type": "string", "description": "Move a contact to this company (e.g. they changed jobs). "

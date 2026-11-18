@@ -906,8 +906,8 @@ def update_node(node_id):
         if values["owner_rep"] != existing["owner_rep"]:
             return bad(OWNER_LOCKED, 403)
         del values["owner_rep"]
-    # A Wingmate record's details come from Wingmate; here only what Wingmate doesn't
-    # have can change (the About summary, plus tags, notes and connections elsewhere).
+    # On a Wingmate record the stage follows Wingmate's pipeline. Name, details and company
+    # can be tidied here: an edit sticks until that field changes in Wingmate.
     if existing["wingmate_id"]:
         changed = [f for f in WINGMATE_FIELDS if f in values and (values[f] or None) != (existing[f] or None)]
         if changed:
@@ -932,8 +932,8 @@ def update_node(node_id):
 
 OWNER_LOCKED = ("Who a lead belongs to is set in Wingmate. Reassign it there; "
                 "it can't be changed in PSS Connect.")
-# What a Wingmate record gets from Wingmate, so it's changed there, not here.
-WINGMATE_FIELDS = ("name", "title", "email", "phone", "location", "stage", "company_id")
+# What a Wingmate record always takes from Wingmate, so it's changed there, not here.
+WINGMATE_FIELDS = ("stage",)
 FIELD_LABELS = {"name": "name", "title": "title", "email": "email", "phone": "phone",
                 "location": "location", "stage": "stage", "company_id": "company"}
 
@@ -1104,8 +1104,6 @@ def move_contact(node_id):
         return bad("Not found", 404)
     if not can_edit_node(person):
         return not_yours("contacts assigned to you")
-    if person["wingmate_id"]:
-        return bad(wingmate_locked(["company_id"]), 403)
     data = request.get_json(silent=True) or {}
     company_id, name = to_int(data.get("company_id")), str(data.get("company_name") or "").strip()[:300]
     created = False
