@@ -1169,6 +1169,11 @@ def tool_wm_lead(args):
         raise ToolError("No lead with that id in the connected Wingmate pipelines. Use search_wingmate.")
     client = clients[lead_id]
     out = wm_lead_brief(db, data, lead, contacts_by_lead(data).get(lead_id, []), pss_links(db))
+    flag = wingmate.push_flag(lead)
+    out["pss_connect_push"] = "yes" if flag else "no" if flag is False else "not set"
+    info = {k: v for k, v in wingmate.custom_fields(lead) if wingmate.text(v)}
+    if info:
+        out["lead_info"] = info
     try:
         comments = client.get_all(f"/leads/{lead_id}/comments")
     except wingmate.WingmateError as e:

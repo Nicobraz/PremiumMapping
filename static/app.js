@@ -3116,6 +3116,7 @@ function wingmateCounts(r, preview) {
     `${r[key]} ${(r[key] === 1 ? one : many).replace(preview ? /added|linked|updated/ : /$^/, (w) => `to be ${w}`)}`);
   if (preview && r.notes_to_check) parts.push(`notes checked on ${plural(r.notes_to_check, 'company', 'companies')}`);
   if (r.off_map) parts.push(`${plural(r.off_map, 'lead', 'leads')} kept off the map`);
+  if (r.not_pushed) parts.push(`${plural(r.not_pushed, 'lead', 'leads')} not marked “PSS Connect Push: Yes” left out`);
   if (r.companies_folded) parts.push(`${plural(r.companies_folded, '“Company - Person” company', '“Company - Person” companies')} ${preview ? 'to be ' : ''}folded into their company`);
   if (r.people_merged) parts.push(`${plural(r.people_merged, 'duplicate contact', 'duplicate contacts')} ${preview ? 'to be ' : ''}merged`);
   return parts.length ? parts.join(' · ') : 'Everything already up to date';
@@ -3146,7 +3147,8 @@ function wingmateSectionHtml() {
     : last.ok ? `<p class="wm-result">Last sync ${esc(timeAgo(last.at))}: ${esc(wingmateCounts(last, false))}.</p>`
     : `<p class="wm-result error-text">Last sync ${esc(timeAgo(last.at))} failed: ${esc(last.error)}</p>`;
   const preview = w.preview && !running
-    ? (w.preview.ok ? `<p class="wm-preview">Preview (${plural(w.preview.leads, 'lead', 'leads')}, ${plural(w.preview.contacts, 'contact', 'contacts')} in Wingmate): ${esc(wingmateCounts(w.preview, true))}.</p>`
+    ? (w.preview.ok ? `<p class="wm-preview">Preview (${plural(w.preview.leads, 'lead', 'leads')}, ${plural(w.preview.contacts, 'contact', 'contacts')} in Wingmate, ${w.preview.push_yes || 0} marked “PSS Connect Push: Yes”): ${esc(wingmateCounts(w.preview, true))}.</p>`
+        + (w.preview.leads && !w.preview.push_field_seen ? '<p class="wm-result error-text">PSS Connect can\'t see a “PSS Connect Push” field on any lead, so no new leads will come in. Check the field name in Wingmate\'s lead info.</p>' : '')
       : `<p class="wm-result error-text">Preview failed: ${esc(w.preview.error)}</p>`) : '';
   return `<h3>Wingmate ${w.paused ? '<span class="pill pill-paused">Paused</span>' : '<span class="pill pill-company">Connected</span>'}</h3>
     ${w.paused

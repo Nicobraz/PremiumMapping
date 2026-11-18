@@ -2,8 +2,8 @@
 Sync from Wingmate into PSS Connect (and, for outbound flows, a few writes back:
 updates on a lead and stage moves; see flows.py).
 
-Wingmate leads become companies, their contacts become people, and lead
-comments become notes. A lead named "Company - Person" (one lead per contact, linked
+Wingmate leads marked "PSS Connect Push: Yes" become companies (leads already here keep
+syncing), their contacts become people, and lead comments become notes. A lead named "Company - Person" (one lead per contact, linked
 to the company) isn't a company of its own: its contact goes under that company,
 and the contact's stage and owner come from it. On later runs only name, location, email and phone
 are refreshed from Wingmate, and the owner rep always follows the Wingmate lead's
@@ -143,6 +143,65 @@ def custom_fields(item):
                 key = field.get("name") or field.get("label") or field.get("key") or ""
                 pairs.append((str(key).lower(), field.get("value")))
     return pairs
+
+
+# "PSS Connect Push" is a lead info field in Wingmate: only leads set to Yes are brought
+# into PSS Connect (ones already here keep syncing). Wingmate's lead info can arrive in
+# several shapes, so the field is looked for anywhere in the lead.
+PUSH_FIELD = "PSS Connect Push"
+_LABEL_KEYS = ("name", "label", "key", "title", "field_name", "custom_field_name", "display_name")
+_VALUE_KEYS = ("value", "values", "selected", "selected_option", "selected_options", "answer", "text")
+
+
+def _words(value):
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in str(value).lower()).split())
+
+
+def _is_push_label(value):
+    words = _words(value)
+    return "pss connect" in words and "push" in words
+
+
+def _says_yes(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return _words(value) in ("yes", "y", "true", "1", "checked", "on")
+    if isinstance(value, list):
+        return any(_says_yes(v) for v in value)
+    if isinstance(value, dict):
+        return any(_says_yes(value[k]) for k in _VALUE_KEYS + ("name", "label") if k in value)
+    return False
+
+
+def push_flag(item, depth=0):
+    """True/False for the lead's "PSS Connect Push" field, or None when it doesn't have one."""
+    if depth > 6:
+        return None
+    if isinstance(item, dict):
+        label = next((item[k] for k in _LABEL_KEYS if isinstance(item.get(k), str)), None)
+        nested = next((v for k, v in item.items() if k in ("custom_field", "field", "definition", "lead_info_field")
+                       and isinstance(v, dict)), None)
+        if nested is not None and label is None:
+            label = next((nested[k] for k in _LABEL_KEYS if isinstance(nested.get(k), str)), None)
+        if label is not None and _is_push_label(label):
+            return any(_says_yes(item[k]) for k in _VALUE_KEYS if k in item)
+        for key, value in item.items():
+            if _is_push_label(key):
+                return _says_yes(value)
+        for value in item.values():
+            if isinstance(value, (dict, list)):
+                found = push_flag(value, depth + 1)
+                if found is not None:
+                    return found
+    elif isinstance(item, list):
+        for value in item:
+            found = push_flag(value, depth + 1)
+            if found is not None:
+                return found
+    return None
 
 
 def custom_value(item, *words):
@@ -378,6 +437,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
               "notes_added": 0, "notes_moved": 0, "skipped": 0, "off_map": len(held_back), "put_on_map": 0,
               "companies_folded": 0, "people_merged": 0,
+              "push_yes": 0, "push_field_seen": 0, "not_pushed": 0,
               "stages": stages}
     ts = now()
     fake_id = [0]
@@ -533,6 +593,12 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         owner = owner_of(lead)
         lead_owner[lead_id] = owner
         lead_stage[lead_id] = text(lead.get("status_string"))
+        flag = push_flag(lead)
+        counts["push_field_seen"] += flag is not None
+        counts["push_yes"] += bool(flag)
+        if not flag and wm_id not in by_wm and wm_id not in aliases:
+            counts["not_pushed"] += 1  # not marked "PSS Connect Push: Yes", and not here yet
+            continue
         seen = text(lead.get("actioned_at") or lead.get("created_at"))
         held = lead_id in held_back
         fresh = False
