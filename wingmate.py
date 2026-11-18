@@ -509,7 +509,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
               "notes_added": 0, "notes_moved": 0, "skipped": 0, "off_map": len(held_back), "put_on_map": 0,
               "companies_folded": 0, "people_merged": 0,
-              "push_yes": 0, "push_field_seen": 0, "not_pushed": 0, "taken_off_map": 0,
+              "push_yes": 0, "push_field_seen": 0, "not_pushed": 0, "taken_off_map": 0, "linked_in": 0,
               "stages": stages}
     ts = now()
     fake_id = [0]
@@ -657,6 +657,45 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 votes = domain_votes.setdefault(domain, {})
                 votes[n["company_id"]] = votes.get(n["company_id"], 0) + 1
 
+    # Company cards from a lead marked "PSS Connect: Yes" + Company (remembered across
+    # pipelines). Every lead linked to one comes in as its contact, marked or not.
+    pss_companies = set()
+    for n in nodes:
+        if n["type"] == "company":
+            try:
+                if json.loads(n.get("wingmate_sync") or "{}").get("pss_company"):
+                    pss_companies.add(n["id"])
+            except ValueError:
+                pass
+
+    for lead in leads:  # this pipeline's company leads marked Yes count right away
+        lead_id = str(lead.get("id"))
+        card = by_wm.get(f"lead:{lead_id}")
+        if card is not None and card["type"] == "company" and lead_id not in person_leads \
+                and kinds.get(lead_id) != "contact" and push_flag(lead):
+            pss_companies.add(card["id"])
+
+    def domain_company(emails):
+        for email in emails:
+            votes = domain_votes.get(email_domain(email))
+            if votes:
+                return max(votes, key=votes.get)
+        return None
+
+    # A lead that isn't marked Company but whose contacts' work email belongs to one of those
+    # companies is one of its contacts (e.g. "Carolyn Featherston" at @buildwithmint.com).
+    for lead in leads:
+        lead_id = str(lead.get("id"))
+        if lead_id in person_leads or kinds.get(lead_id) == "company":
+            continue
+        emails = [text(c.get("email")).lower() for c in contacts_by_lead.get(lead_id, []) if text(c.get("email"))]
+        if domain_company(emails) in pss_companies:
+            person_leads[lead_id] = (None, "", emails)
+            for contact in contacts_by_lead.get(lead_id, []):
+                email = text(contact.get("email")).lower()
+                if email:
+                    own_lead.setdefault(("email", email), lead_id)
+
     def company_for(company_lead, company_name, emails):
         """A contact lead's company card: its company lead's, else the company their email
         domain belongs to, else one named like the lead ("Mint" -> Mint Construction)."""
@@ -781,6 +820,12 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         flag = push_flag(lead)
         counts["push_field_seen"] += flag is not None
         counts["push_yes"] += bool(flag)
+        if not flag and lead_id in person_leads:
+            # Linked to a company marked "PSS Connect: Yes": in, whether marked or not.
+            linked = company_for(*person_leads[lead_id])
+            if linked is not None and linked["id"] in pss_companies:
+                flag = pushed[lead_id] = True
+                counts["linked_in"] += 1
         if not flag and wm_id not in by_wm and wm_id not in aliases:
             counts["not_pushed"] += 1  # not marked "PSS Connect Push: Yes", and not here yet
             continue
@@ -840,6 +885,20 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             counts["companies_updated"] += changed
         reached_map(node, held)
         if primary:
+            # Marked Yes (and not Contact): this is the company card its linked leads join.
+            is_company = pushed[lead_id] and kinds.get(lead_id) != "contact"
+            try:
+                snapshot = json.loads(node.get("wingmate_sync") or "{}")
+            except ValueError:
+                snapshot = {}
+            if bool(snapshot.get("pss_company")) != is_company:
+                if is_company:
+                    snapshot["pss_company"] = 1
+                else:
+                    snapshot.pop("pss_company", None)
+                update(node, {"wingmate_sync": json.dumps(snapshot, sort_keys=True)})
+            if node.get("id") and node["id"] > 0:
+                (pss_companies.add if is_company else pss_companies.discard)(node["id"])
             apply_push(node, pushed[lead_id], held)
         lead_nodes[lead_id] = node
         # Re-read comments only when the lead has new activity (or no timestamp to tell).
