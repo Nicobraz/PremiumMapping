@@ -36,7 +36,7 @@ email, and changes show up for everyone within a few seconds.
 - **Connecting across reps:** anyone can connect their contact to any other contact, including ones they've never talked to.
 - **Relationship types:** Knows, Reports to, Referred, and **Custom**, which you name when you add it (Partner, Supplier, Competitor…); the name shows on the line and the card. Connections that used the old Partner, Vendor to, Competitor and Other types became Custom ones with those names (Other became *Connected*).
 - **Legend chips** show or hide relationship types. **Filter** (top bar) narrows the map and Directory by **city** (from Location), **tag** or **rep**; a company's tag or city also keeps its people in view. Company tags show under the company name on the map.
-- **Activity** shows who changed what. **Data** saves the map as a PNG. Admins also get **Export to CSV** (contacts or companies, everything or just what's showing) and **Backup / Restore**.
+- **Data** saves the map as a PNG. (Changes are still logged for admins and Claude/ChatGPT, but there's no Activity screen.) Admins also get **Export to CSV** (contacts or companies, everything or just what's showing) and **Backup / Restore**.
 
 ## On a phone
 

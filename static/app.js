@@ -3424,7 +3424,7 @@ async function loadActivity() {
   } catch (err) { toast(err.message, true); }
 }
 
-$('#btn-activity').addEventListener('click', () => {
+$('#btn-activity')?.addEventListener('click', () => {
   const box = $('#activity');
   if (!box.hidden) { closeActivity(); return; }
   closePanel();
@@ -3686,7 +3686,6 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
   const click = (id) => $(id).click();
   ({
     filter: () => { toggleFilterMenu(true); syncNav('more'); },
-    activity: () => { click('#btn-activity'); syncNav('more'); },
     requests: () => { openRequestsPanel(); syncNav('more'); },
     data: () => click('#btn-data'),
     admin: () => click('#btn-admin'),
