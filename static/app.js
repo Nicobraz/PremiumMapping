@@ -69,8 +69,8 @@ const state = {
   view: storeGet('pss.view') || 'mine',  // 'mine' or (admins) a rep's name; 'team' only when there are no reps
   unsaved: new Map(),  // dots moved but not saved yet (id -> position)
   pipelines: [],  // connected Wingmate pipelines: { id, name, nodes: [record ids] }
-  pipeline: storeGet('pss.pipeline'),  // the pipeline picked to show, '' for all
-  gridPos: null,  // the live standard grid, when the view has no saved layout or a pipeline is picked
+  pipelineFilter: '',
+  gridPos: null,  // the live standard grid, when the view has no saved layout
   viewSets: null,       // { visible } node ids when a rep view is on
   mapIds: null,         // node ids drawn on the map (the rest are saved off the map)
   tagFilter: '',
@@ -771,7 +771,7 @@ function viewChartPositions() {
 // Arranges the shared positions on the records themselves (used before any rep exists,
 // and for records that have none yet). Reps' views use the live grid instead.
 function runLayout(randomize) {
-  if (viewRep() || state.pipeline) { layoutView(); fitView(); return; }
+  if (viewRep()) { layoutView(); fitView(); return; }
   const eles = cy.nodes();
   if (!eles.length) return;
   const target = orgChartPositions();
@@ -820,7 +820,6 @@ cy.on('render', scheduleTagPositions);
 cy.on('dragfree', 'node', (evt) => {
   const el = evt.target;
   const p = el.position();
-  if (state.pipeline) { state.gridPos?.set(el.data('nid'), { x: p.x, y: p.y }); return; }  // a pipeline's grid isn't saved
   state.unsaved.set(el.data('nid'), { x: Math.round(p.x), y: Math.round(p.y) });
   renderLayoutBar();
 });
@@ -903,6 +902,14 @@ async function doSync() {
     state.reps = data.reps || [];
     state.tagList = data.tag_list || [];
     state.pipelines = data.pipelines || [];
+    // Wingmate pipelines work like tags on contacts: which pipelines each record is in.
+    state.pipelinesOf = new Map();
+    for (const p of state.pipelines) {
+      for (const id of p.nodes) {
+        if (!state.pipelinesOf.has(id)) state.pipelinesOf.set(id, []);
+        if (!state.pipelinesOf.get(id).includes(p.name)) state.pipelinesOf.get(id).push(p.name);
+      }
+    }
     state.transfers = data.transfers || [];
     renderRequestsBadge();
     $('#storage-warning').hidden = !data.temporary_storage;
@@ -955,7 +962,7 @@ $('#legend-mobile').addEventListener('click', onLegendClick);
 const cityOf = (n) => String(n.location || '').split(',')[0].trim();
 
 function activeFilterCount() {
-  return [state.cityFilter, state.tagFilter, state.ownerFilter, state.stageFilter, state.priorityFilter].filter(Boolean).length;
+  return [state.cityFilter, state.tagFilter, state.ownerFilter, state.stageFilter, state.pipelineFilter, state.priorityFilter].filter(Boolean).length;
 }
 
 // A person also matches through their company (and a company through its
@@ -965,6 +972,8 @@ function filterMatches() {
   const tag = state.tagFilter.toLowerCase();
   const owner = state.ownerFilter.toLowerCase();
   const stage = state.stageFilter.toLowerCase();
+  const pipeline = state.pipelineFilter.toLowerCase();
+  const inPipeline = (p) => pipelinesOf(p).some((name) => name.toLowerCase() === pipeline);
   const cityOk = (n) => cityOf(n).toLowerCase() === city;
   const stageOk = (p) => p.stage.trim().toLowerCase() === stage;
   const matched = new Set();
@@ -976,6 +985,7 @@ function filterMatches() {
     if (city && !(cityOk(n) || (company && cityOk(company)) || (n.type === 'company' && peopleAt(n.id).some(cityOk)))) continue;
     // Stage lives on contacts; a company matches through its contacts.
     if (stage && !(n.type === 'person' ? stageOk(n) : peopleAt(n.id).some((p) => inView(p.id) && stageOk(p)))) continue;
+    if (pipeline && !(n.type === 'person' ? inPipeline(n) : peopleAt(n.id).some((p) => inView(p.id) && inPipeline(p)))) continue;
     if (state.priorityFilter && !(n.type === 'person' ? n.priority : peopleAt(n.id).some((p) => inView(p.id) && p.priority))) continue;
     matched.add(n.id);
   }
@@ -995,21 +1005,12 @@ function viewRep() {
   return state.isAdmin ? state.view : myName();
 }
 
-// A pipeline picked in the menu narrows the view to that Wingmate pipeline's records
-// (with the companies its contacts work at), laid out in a fresh grid that isn't saved.
-function pipelineMembers() {
-  const p = state.pipelines.find((x) => x.id === state.pipeline);
-  return p ? new Set(p.nodes) : null;
-}
-
 function computeViewSets(rep) {
   const r = rep.trim().toLowerCase();
-  const members = pipelineMembers();
   const mine = new Set();
   const visible = new Set();
   for (const n of state.nodes.values()) {
     if (r && n.owner_rep.trim().toLowerCase() !== r) continue;
-    if (members && !members.has(n.id)) continue;
     mine.add(n.id);
     visible.add(n.id);
     if (n.type === 'person' && n.company_id != null && state.nodes.has(n.company_id)) visible.add(n.company_id);
@@ -1030,8 +1031,7 @@ function inRepView(id) {
 function applyView() {
   scheduleBends();
   const rep = viewRep();
-  if (state.pipeline && !pipelineMembers()) state.pipeline = '';  // that pipeline was removed
-  state.viewSets = rep || state.pipeline ? computeViewSets(rep) : null;
+  state.viewSets = rep ? computeViewSets(rep) : null;
   const v = state.viewSets;
   layoutView();
   cy.batch(() => {
@@ -1042,17 +1042,15 @@ function applyView() {
     });
   });
   $('#view-select').classList.toggle('active', !!rep && state.isAdmin);
-  renderPipelineSelect();
   $('#view-key').hidden = !v || ![...v.visible].some((id) => !v.mine.has(id));
   if ((rep || '').toLowerCase() !== (state.viewPosFor || '')) loadViewPositions();
 }
 
 // The standard grid is worked out live from the records in the view, so it stays tidy
 // as leads come and go. Once a rep saves their own layout, that's used instead (new
-// records go beside it); ✣ removes it and goes back to the live grid. A picked
-// pipeline always shows the live grid of its records, and isn't saved.
+// records go beside it); ✣ removes it and goes back to the live grid.
 function usesGrid() {
-  return !!state.pipeline || (!!viewRep() && !state.viewPos?.size);
+  return !!viewRep() && !state.viewPos?.size;
 }
 
 function layoutView() {
@@ -1175,33 +1173,6 @@ function setView(view) {
 
 $('#view-select').addEventListener('change', (evt) => setView(evt.target.value));
 
-function renderPipelineSelect() {
-  const select = $('#pipeline-select');
-  select.hidden = !state.pipelines.length;
-  const options = '<option value="">All pipelines</option>'
-    + state.pipelines.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
-  if (select.dataset.options !== options) { select.innerHTML = options; select.dataset.options = options; }
-  select.value = state.pipeline;
-  select.classList.toggle('active', !!state.pipeline);
-}
-
-function setPipeline(id) {
-  settleLayout();
-  state.pipeline = id;
-  storeSet('pss.pipeline', id);
-  applyView();
-  applyFilters();
-  updateStats();
-  applySearch();
-  scheduleBends();
-  scheduleTagPositions();
-  fitView();
-  if (id && !state.viewSets?.visible.size) {
-    toast(`Nothing from ${state.pipelines.find((p) => p.id === id)?.name || 'that pipeline'} is on ${viewRep() ? 'this' : 'the'} map.`);
-  }
-}
-
-$('#pipeline-select').addEventListener('change', (evt) => setPipeline(evt.target.value));
 
 function applyFilters() {
   scheduleBends();
@@ -1227,7 +1198,7 @@ function renderFilterSummary(matched) {
   $('#btn-filter').classList.toggle('active', !!count);
   $('#nav-filter-count').hidden = !count;
   $('#nav-filter-count').textContent = count;
-  const chips = [['city', 'City', state.cityFilter], ['tag', 'Tag', state.tagFilter], ['stage', 'Stage', state.stageFilter],
+  const chips = [['city', 'City', state.cityFilter], ['tag', 'Tag', state.tagFilter], ['stage', 'Stage', state.stageFilter], ['pipeline', 'Pipeline', state.pipelineFilter],
     ['priority', 'Priority', state.priorityFilter ? 'High' : ''], ['owner', 'Rep', state.ownerFilter]]
     .filter(([, , value]) => value)
     .map(([key, label, value]) => `<button type="button" class="filter-chip" data-clear="${key}" title="Remove this filter">${label}: <b>${esc(value)}</b> ×</button>`);
@@ -1269,6 +1240,12 @@ function refreshFilterOptions() {
   fillSelect($('#filter-tag'), countedEntries(tags), 'All tags', state.tagFilter);
   fillSelect($('#filter-owner'), countedEntries(owners), 'All reps', state.ownerFilter);
   fillSelect($('#filter-stage'), countedEntries(stages), 'All stages', state.stageFilter);
+  const pipelineCounts = new Map();
+  for (const n of state.nodes.values()) {
+    if (n.type === 'person') for (const name of pipelinesOf(n)) bump(pipelineCounts, name);
+  }
+  fillSelect($('#filter-pipeline'), countedEntries(pipelineCounts), 'All pipelines', state.pipelineFilter);
+  $('#filter-pipeline').closest('label').hidden = !pipelineCounts.size;
   $('#stage-list').innerHTML = [...stages.values()].map((t) => `<option value="${esc(t.value)}">`).join('');
   $('#owner-list').innerHTML = [...owners.values()].map((o) => `<option value="${esc(o.value)}">`).join('');
   $('#tag-list').innerHTML = [...tags.values()].map((t) => `<option value="${esc(t.value)}">`).join('');
@@ -1300,12 +1277,14 @@ $('#filter-city').addEventListener('change', (evt) => setFilter('city', evt.targ
 $('#filter-tag').addEventListener('change', (evt) => setFilter('tag', evt.target.value));
 $('#filter-owner').addEventListener('change', (evt) => setFilter('owner', evt.target.value));
 $('#filter-stage').addEventListener('change', (evt) => setFilter('stage', evt.target.value));
+$('#filter-pipeline').addEventListener('change', (evt) => setFilter('pipeline', evt.target.value));
 $('#filter-priority').addEventListener('change', (evt) => setFilter('priority', evt.target.value));
 $('#btn-clear-filters').addEventListener('click', () => {
   state.cityFilter = '';
   state.tagFilter = '';
   state.ownerFilter = '';
   state.stageFilter = '';
+  state.pipelineFilter = '';
   state.priorityFilter = '';
   $('#filter-priority').value = '';
   refreshFilterOptions();
@@ -1339,7 +1318,7 @@ function searchMatches() {
   const q = $('#search').value.trim().toLowerCase();
   if (!q) return [];
   return [...state.nodes.values()].filter((n) =>
-    [n.name, n.title, n.email, n.type === 'company' ? n.tags : '', n.location, n.owner_rep, n.notes].some((v) => String(v || '').toLowerCase().includes(q))
+    [n.name, n.title, n.email, n.type === 'company' ? n.tags : '', n.location, n.owner_rep, n.notes, ...pipelinesOf(n)].some((v) => String(v || '').toLowerCase().includes(q))
     || (state.noteText.get(n.id) || '').includes(q));
 }
 
@@ -1737,7 +1716,14 @@ function aboutHtml(n) {
 function stageBadge(n) {
   if (!n || n.type !== 'person') return '';
   return (n.priority ? ' <span class="priority-star" title="High priority">★</span>' : '')
-    + (n.stage ? ` <span class="stage-chip" title="Pipeline stage">${esc(n.stage)}</span>` : '');
+    + (n.stage ? ` <span class="stage-chip" title="Pipeline stage">${esc(n.stage)}</span>` : '')
+    + pipelineChips(n);
+}
+
+// The Wingmate pipelines a contact is in, shown like tags.
+const pipelinesOf = (n) => state.pipelinesOf?.get(n.id) || [];
+function pipelineChips(n) {
+  return pipelinesOf(n).map((name) => ` <span class="pipeline-chip" title="Wingmate pipeline">${esc(name)}</span>`).join('');
 }
 
 function offMapBadge(n) {
@@ -1880,7 +1866,7 @@ function personCardHtml(n) {
   const linked = new Set(rows.map((r) => r.other.id));
   const unlinked = company ? peopleAt(company.id).filter((p) => p.id !== n.id && !linked.has(p.id)) : [];
   const stage = n.stage
-    ? `<div class="stage-line">Stage: <span class="stage-chip big">${esc(n.stage)}</span>${n.owner_rep ? ` <span class="muted">· ${esc(n.owner_rep)}'s contact</span>` : ''}</div>`
+    ? `<div class="stage-line">Stage: <span class="stage-chip big">${esc(n.stage)}</span>${pipelineChips(n)}${n.owner_rep ? ` <span class="muted">· ${esc(n.owner_rep)}'s contact</span>` : ''}</div>`
     : '';
   return heroHtml(n, n.title, (company
     ? `<button class="hero-link" data-goto="${company.id}">${esc(company.name)} →</button>`
