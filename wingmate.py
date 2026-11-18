@@ -507,7 +507,8 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
 
     counts = {"leads": len(leads), "contacts": len(contacts), "companies_added": 0, "companies_linked": 0,
               "companies_updated": 0, "people_added": 0, "people_linked": 0, "people_updated": 0,
-              "notes_added": 0, "notes_moved": 0, "skipped": 0, "off_map": len(held_back), "put_on_map": 0,
+              "notes_added": 0, "notes_moved": 0, "skipped": 0, "put_on_map": 0,
+              "off_map": len([l for l in leads if str(l.get("id")) in held_back and not push_flag(l)]),
               "companies_folded": 0, "people_merged": 0,
               "push_yes": 0, "push_field_seen": 0, "not_pushed": 0, "taken_off_map": 0, "linked_in": 0,
               "stages": stages}
@@ -697,6 +698,18 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                     own_lead.setdefault(("email", email), lead_id)
 
     def company_for(company_lead, company_name, emails):
+        found = find_company(company_lead, company_name, emails)
+        # A same-named copy (no Wingmate lead of its own) gives way to the company card
+        # marked "PSS Connect: Yes" + Company; the copy is folded into it.
+        if found is not None and found["id"] not in pss_companies and not found.get("wingmate_id"):
+            key = norm_name(found["name"], True)
+            twin = next((by_id[i] for i in pss_companies if i in by_id and by_id[i]["id"] != found["id"]
+                         and norm_name(by_id[i]["name"], True) == key), None)
+            if twin is not None:
+                return twin
+        return found
+
+    def find_company(company_lead, company_name, emails):
         """A contact lead's company card: its company lead's, else the company their email
         domain belongs to, else one named like the lead ("Mint" -> Mint Construction)."""
         if company_lead:
@@ -717,7 +730,8 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             found = [n for n in by_id.values() if n["type"] == "company" and n["id"] not in made_from_contacts
                      and (norm_name(n["name"], True) == key or norm_name(n["name"], True).startswith(key + " "))]
             if found:
-                return max(found, key=lambda n: (headcount.get(n["id"], 0), norm_name(n["name"], True) == key))
+                return max(found, key=lambda n: (n["id"] in pss_companies, headcount.get(n["id"], 0),
+                                                 norm_name(n["name"], True) == key))
         return None
 
     def person_lead_company(lead_id, wm_id, company_name, location, owner, held, company_lead=None, emails=()):
@@ -729,7 +743,8 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         # Mint Construction) is folded into the one it should have been.
         before = by_id.get(aliases.get(wm_id, (None,))[0])
         if (target is not None and before is not None and before is not target and before["type"] == "company"
-                and not before.get("wingmate_id") and norm_name(before["name"], True) == norm_name(company_name, True)):
+                and not before.get("wingmate_id") and norm_name(before["name"], True)
+                in (norm_name(company_name, True), norm_name(target["name"], True))):
             fold_company(before, target)
             companies_by_name.pop(norm_name(company_name, True), None)
         made = by_wm.get(wm_id)
@@ -789,7 +804,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         """Stage and owner from the person's lead, when it's the most recent one."""
         if not lead_wins(node, lead_at.get(own, "")):
             return False
-        apply_push(node, pushed.get(own, False), own in held_back)
+        apply_push(node, pushed.get(own, False), own in held_back and not pushed.get(own, False))
         # The stage can't be edited in PSS Connect, so it always follows the lead.
         changed = False
         if stage and node.get("stage") != stage:
@@ -830,7 +845,9 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             counts["not_pushed"] += 1  # not marked "PSS Connect Push: Yes", and not here yet
             continue
         seen = text(lead.get("actioned_at") or lead.get("created_at"))
-        held = lead_id in held_back
+        # Marked (or linked to a company marked) PSS Connect: Yes goes on the map whatever the
+        # pipeline's own map setting says.
+        held = lead_id in held_back and not flag
         fresh = False
         node = by_wm.get(wm_id)
         if lead_id in person_leads:
@@ -872,7 +889,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                           "off_map": 1 if held else 0,
                           "created_at": ts, "updated_at": ts, "updated_by": ACTOR}
                 node = {**values, "id": insert(values), "email": "", "phone": "", "title": "", "company_id": None}
-                companies_by_name[norm_name(name, True)] = node
+                companies_by_name[norm_name(name, True)] = by_id[node["id"]] = node
                 by_wm[wm_id] = node
                 counts["companies_added"] += 1
         primary = node.get("wingmate_id") == wm_id
@@ -927,7 +944,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         own = (own_lead.get(("email", email)) if email else None) \
             or own_lead.get(("name", norm_name(name), norm_name(company["name"], True))) or lead_id
         stage = lead_stage.get(own, "")
-        held = own in held_back
+        held = own in held_back and not pushed.get(own, False)
         node = by_wm.get(wm_id)
         merged_into = aliases.get(wm_id)
         if node is None and merged_into and merged_into[0] in by_id:
@@ -975,6 +992,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                                                       **({"unpushed": 1} if unpushed else {})}, sort_keys=True)
                 values["off_map"] = 1 if held or unpushed else 0
                 node = {**values, "id": insert(values)}
+                by_id[node["id"]] = node
                 people_by_key[(norm_name(name), company["id"])] = node
                 if email:
                     people_by_email[email] = node
