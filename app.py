@@ -874,8 +874,13 @@ def pipeline_views(db):
 
 # ---------- nodes ----------
 
+NO_ADD = ("Companies and contacts come from Wingmate: add them there and mark them "
+          "PSS Connect: Yes. They can't be added in PSS Connect.")
+
+
 @app.post("/api/nodes")
 def create_node():
+    return bad(NO_ADD, 403)  # Wingmate is the only source of companies and contacts
     data = request.get_json(silent=True) or {}
     node_type = data.get("type")
     if node_type not in NODE_TYPES:
@@ -1133,6 +1138,7 @@ def move_contact(node_id):
         company = next((dict(r) for r in db.execute("SELECT * FROM nodes WHERE type = 'company' ORDER BY id")
                         if norm_name(r["name"], True) == target), None)
         if not company:
+            return bad("No company by that name. " + NO_ADD, 403)
             ts = now()
             new_id = db.insert("nodes", {"type": "company", "name": name, "owner_rep": person["owner_rep"] or own_name(),
                                          "created_at": ts, "updated_at": ts, "updated_by": actor()})
@@ -2029,6 +2035,7 @@ def offsite_backup():
 @app.post("/api/import.csv")
 def import_csv():
     """Adds people (and their companies) from a CSV. Existing records are left alone."""
+    return bad(NO_ADD, 403)  # Wingmate is the only source of companies and contacts
     upload = request.files.get("file")
     raw = upload.read() if upload else request.get_data()
     try:

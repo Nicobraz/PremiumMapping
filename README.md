@@ -13,7 +13,7 @@ email, and changes show up for everyone within a few seconds.
 
 ## Using it
 
-- **+ Company / + Person**: add someone. People pick their company, which draws a dashed "works at" line.
+- **Companies and contacts come from Wingmate only**: there's no way to add one in PSS Connect (no + Company / + Person, CSV import, or adding through Claude/ChatGPT). Add the lead in Wingmate and mark it *PSS Connect: Yes*; it shows up after the next sync. In PSS Connect you tidy and enrich what's there: tags, notes, connections, About, color, priority, renaming and moving contacts between existing companies.
 - **Click** a person to open their **player card**: contact info, tags, an About summary, connections (split into inside and outside their company), and running notes stamped with who wrote them and when.
 - **Click** a company for its card: everyone who works there, with titles and how they're connected inside the company, plus company notes.
 - **Changing companies** (any contact, including ones from Wingmate): on a contact's card, **Add to a company** / **Change company** lets you pick a company or type a new name (which adds the company), for when someone joins a company or moves to another one. A note like "Moved from Acme to Peak Climbing" is added to the contact (untick to skip), and **Remove from…** takes them off a company. On a company's card, **+ Add existing contact** finds someone already in PSS Connect and adds or moves them there. Reps can move their own contacts; admins anyone. Claude and ChatGPT can do the same ("Riley moved to Granite Gyms").
@@ -24,8 +24,6 @@ email, and changes show up for everyone within a few seconds.
 - **High priority** (contacts): anyone can flag a contact with **☆ Mark high priority**. Flagged contacts get a gold star and ring on the map and a star in lists, and **Filter → Priority** narrows to them.
 - **Pipeline stage** (contacts): shows on each contact's card, in company rosters and in the Directory, so every rep can see where a contact stands, even another rep's. Wingmate contacts get it from their lead's status, and a change in Wingmate updates it; other contacts' owners set it under Edit. Filter → Stage narrows the map to it.
 - **Merge…** (on a contact's card): folds a duplicate into this contact. Notes and connections move over, missing details are filled in, and the duplicate is removed; Wingmate keeps syncing into the kept contact. Reps can merge their own contacts, admins any.
-- **Suggestions while adding**: typing a new company's or person's name (or a person's email or phone) drops down matching records already in PSS Connect, everyone's, not just your map, with who they belong to. Click one (or arrow down and Enter) to open it instead of adding a duplicate.
-- **Duplicate guard**: adding or renaming warns as you type if the company or person is already on the map (company names ignore capitals, punctuation and Inc/LLC/Corp; people match on name within the same company, or on email). Saving a likely duplicate asks you to open the existing record or **Add anyway**. CSV imports use the same matching.
 - **Contacts** (top bar) lists every rep's contacts, with a Companies tab, whatever view the map is in. Use **Filter by** (Company, Priority, Tag, City, Rep) to stack filters: several values of one kind show any of them, different kinds narrow it down. Click anyone to open their card.
 - **Connect** (top bar): the map way, where you click one dot and then another.
 - **⚙ Admin**: add, edit, deactivate or remove reps (name and the work email they sign in with), and change the admin password.
@@ -38,11 +36,11 @@ email, and changes show up for everyone within a few seconds.
 - **Connecting across reps:** anyone can connect their contact to any other contact, including ones they've never talked to.
 - **Relationship types:** Knows, Reports to, Referred, and **Custom**, which you name when you add it (Partner, Supplier, Competitor…); the name shows on the line and the card. Connections that used the old Partner, Vendor to, Competitor and Other types became Custom ones with those names (Other became *Connected*).
 - **Legend chips** show or hide relationship types. **Filter** (top bar) narrows the map and Directory by **city** (from Location), **tag** or **rep**; a company's tag or city also keeps its people in view. Company tags show under the company name on the map.
-- **Activity** shows who changed what. **Data** imports a contacts CSV and saves the map as a PNG. Admins also get **Export to CSV** (contacts or companies, everything or just what's showing) and **Backup / Restore**.
+- **Activity** shows who changed what. **Data** saves the map as a PNG. Admins also get **Export to CSV** (contacts or companies, everything or just what's showing) and **Backup / Restore**.
 
 ## On a phone
 
-The site switches to a phone layout built for looking things up and adding contacts on the go. It opens on the **Contacts** list (with search), and the bottom bar has **Contacts · Companies · ＋ Add · Map · More**. Cards open full screen and show who each contact knows; closing a card goes back to the list. On phones the map's dots can't be dragged (arrange them from a computer), and filtering the map is under **More**. To install it like an app, open the site in Safari (iPhone) or Chrome (Android) and choose **Share → Add to Home Screen** (iPhone) or **⋮ → Add to Home screen / Install app** (Android).
+The site switches to a phone layout built for looking things up on the go. It opens on the **Contacts** list (with search), and the bottom bar has **Contacts · Companies · Map · More**. Cards open full screen and show who each contact knows; closing a card goes back to the list. On phones the map's dots can't be dragged (arrange them from a computer), and filtering the map is under **More**. To install it like an app, open the site in Safari (iPhone) or Chrome (Android) and choose **Share → Add to Home Screen** (iPhone) or **⋮ → Add to Home screen / Install app** (Android).
 
 ## Wingmate sync
 

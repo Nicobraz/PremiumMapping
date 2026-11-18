@@ -33,8 +33,6 @@
   </div>
 
   <div class="actions">
-    <button id="btn-add-company" class="btn">+ Company</button>
-    <button id="btn-add-person" class="btn">+ Person</button>
     <button id="btn-connect" class="btn btn-primary">Connect</button>
     <div class="filter-wrap">
       <button id="btn-filter" class="btn btn-ghost" aria-haspopup="true" aria-expanded="false" aria-controls="filter-menu">
@@ -117,11 +115,7 @@
   <div id="empty" class="empty" hidden>
     <img class="empty-logo" src="/static/pss-connect-logo.svg" alt="PSS Connect by Premium Surface Solutions">
     <h2>Start your web</h2>
-    <p>Add the companies you sell into, then the people at them, then draw the connections between everyone.</p>
-    <div class="empty-actions">
-      <button class="btn btn-primary" data-empty="company">+ Add a company</button>
-      <button class="btn" data-empty="import">Import a CSV</button>
-    </div>
+    <p>Companies and contacts come from Wingmate: mark a lead <b>PSS Connect: Yes</b> there and it shows up here after the next sync.</p>
   </div>
 
   <aside id="panel" class="panel" hidden></aside>
@@ -165,13 +159,8 @@
     <h2>Data</h2>
     <button class="icon-btn" data-close aria-label="Close">×</button>
   </div>
-  <section>
-    <h3>Import contacts</h3>
-    <p>Columns: <code>name, title, company, email, phone, owner_rep, location, tags, notes</code>. Companies are created automatically and the <code>tags</code> column tags the company; people already on the map are skipped.<span id="csv-owner-note"> Everyone you import is assigned to you.</span></p>
-    <div class="row-btns">
-      <label class="btn btn-primary file-btn">Choose CSV…<input id="csv-file" type="file" accept=".csv,text/csv" hidden></label>
-      <button id="btn-template" class="btn">Download template</button>
-    </div>
+  <section hidden>
+    <span id="csv-owner-note"></span><input id="csv-file" type="file" hidden><button id="btn-template" type="button"></button>
   </section>
   <section id="export-section" hidden>
     <h3>Export to CSV <span class="pill pill-company">Admin</span></h3>
@@ -283,15 +272,11 @@
 <nav id="bottom-nav" class="bottom-nav" aria-label="Main">
   <button type="button" data-nav="contacts" class="on"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14.2c2.4.2 4 1.8 4.5 4.8"/></svg><span>Contacts</span></button>
   <button type="button" data-nav="companies"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V6l7-3v17M11 20V9l9 3v8M2 20h20M7 9h1M7 13h1M7 17h1M15 14h1M15 17h1"/></svg><span>Companies</span></button>
-  <button type="button" data-nav="add" class="nav-add" aria-label="Add a contact or company"><span class="plus">+</span></button>
   <button type="button" data-nav="map"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/></svg><span>Map</span></button>
   <button type="button" data-nav="more"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span>More</span><b id="nav-filter-count" class="count-badge" hidden></b><b id="nav-requests-dot" class="nav-dot" hidden></b></button>
 </nav>
 <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
-<div id="sheet-add" class="sheet" role="menu" hidden>
-  <button type="button" class="sheet-item" data-sheet="add-person">+ Contact</button>
-  <button type="button" class="sheet-item" data-sheet="add-company">+ Company</button>
-</div>
+<div id="sheet-add" class="sheet" role="menu" hidden></div>
 <div id="sheet-more" class="sheet" role="menu" hidden>
   <button type="button" class="sheet-item" data-sheet="ai">✦ Ask AI</button>
   <button type="button" class="sheet-item" data-sheet="wm-sync" hidden>↻ Sync with Wingmate</button>
@@ -299,7 +284,7 @@
   <button type="button" class="sheet-item" data-sheet="filter">Filter the map</button>
   <button type="button" class="sheet-item" data-sheet="requests">Transfer requests <span id="sheet-requests-count" class="count-badge" hidden></span></button>
   <button type="button" class="sheet-item" data-sheet="activity">Activity</button>
-  <button type="button" class="sheet-item" data-sheet="data">Data, import &amp; export</button>
+  <button type="button" class="sheet-item" data-sheet="data">Data &amp; export</button>
   <button type="button" class="sheet-item" data-sheet="admin">Admin settings</button>
   <button type="button" class="sheet-item" data-sheet="fit">Fit map to screen</button>
   <button type="button" class="sheet-item" data-sheet="layout">Arrange map as org chart</button>

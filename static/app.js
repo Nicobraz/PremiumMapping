@@ -1625,7 +1625,6 @@ function canDeleteNote(note) {
 function actionsHtml(n) {
   const btns = [];
   if (n.type === 'company') {
-    btns.push('<button class="btn btn-sm btn-primary" data-act="add-person-here">+ Add person</button>');
     if (state.me || state.isAdmin) btns.push('<button class="btn btn-sm" data-act="add-existing" title="Put a contact who\'s already in PSS Connect at this company">+ Add existing contact</button>');
   }
   if (n.type === 'person' && canEditNode(n)) {
@@ -3570,8 +3569,6 @@ $('#btn-png').addEventListener('click', () => {
 
 // ---------- toolbar ----------
 
-$('#btn-add-company').addEventListener('click', () => openNewNodePanel('company'));
-$('#btn-add-person').addEventListener('click', () => openNewNodePanel('person'));
 $('#btn-directory').addEventListener('click', () => {
   if (state.panel?.kind === 'directory') closePanel(); else openDirectory();
 });
@@ -3597,8 +3594,7 @@ $('#btn-layout').addEventListener('click', async () => {
 });
 $('#empty').addEventListener('click', (evt) => {
   const which = evt.target.closest('[data-empty]')?.dataset.empty;
-  if (which === 'company') openNewNodePanel('company');
-  else if (which === 'import') openDataDialog();
+  if (which === 'import') openDataDialog();
 });
 
 document.addEventListener('keydown', (evt) => {
@@ -3689,8 +3685,6 @@ document.querySelectorAll('.sheet').forEach((sheet) => sheet.addEventListener('c
   closeSheets();
   const click = (id) => $(id).click();
   ({
-    'add-company': () => click('#btn-add-company'),
-    'add-person': () => click('#btn-add-person'),
     filter: () => { toggleFilterMenu(true); syncNav('more'); },
     activity: () => { click('#btn-activity'); syncNav('more'); },
     requests: () => { openRequestsPanel(); syncNav('more'); },
@@ -3774,8 +3768,6 @@ const aiInput = $('#ai-input');
 const AI_SUGGESTIONS = [
   'What should I follow up on this week?',
   'Show my high-priority contacts',
-  'Add contacts from a business card photo',
-  'I’ll paste a list of contacts to add',
   'What changed on the team today?',
 ];
 

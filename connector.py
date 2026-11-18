@@ -47,11 +47,8 @@ INSTRUCTIONS = """\
 PSS Connect is Premium Surface Solutions' relationship map: companies, contacts (people at
 companies), connections between records, and notes. You are working as the signed-in rep.
 
-- Search before adding, so you don't create duplicates. Add tools also refuse likely duplicates
-  and return the matches; only pass allow_duplicate=true if the rep confirms it's a different one.
-- For more than a few contacts at once (a pasted list, spreadsheet, business cards), use
-  bulk_add_contacts with confirm=false first, show the rep the preview, and call it again with
-  the same rows and confirm=true only after they agree.
+- Companies and contacts can't be added here: they come from Wingmate (added there and marked
+  PSS Connect: Yes). If the rep wants to add one, tell them to add it in Wingmate.
 - Reps can edit only records assigned to them. On anyone's record they can still add notes,
   company tags, connections and the high-priority flag.
 - Who a record belongs to is set in Wingmate and can't be changed here, not even by an admin:
@@ -1252,18 +1249,6 @@ TOOLS = [
     ("recent_activity", "Recent activity", READ, tool_activity,
      "The team's latest changes in PSS Connect (who added, edited, noted or connected what).",
      schema({"limit": {"type": "integer", "minimum": 1, "maximum": 100}})),
-    ("add_company", "Add a company", WRITE, tool_add_company,
-     "Add a company (account). Refuses likely duplicates and returns the matches.",
-     schema({"name": S, "location": {"type": "string", "description": "City, ST"}, "tags": TAGS,
-             "about": S, "owner": OWNER, "allow_duplicate": {"type": "boolean"}}, ["name"])),
-    ("add_contact", "Add a contact", WRITE, tool_add_contact,
-     "Add one contact (person). Give company_id, or a company name: an existing company with that name is "
-     "used, otherwise the company is added too. Refuses likely duplicates and returns the matches. "
-     "For several contacts at once use bulk_add_contacts.",
-     schema({"name": S, "company": {"type": "string", "description": "Company name."},
-             "company_id": {"type": "integer"}, **CONTACT_FIELDS,
-             "high_priority": {"type": "boolean"}, "owner": OWNER, "allow_duplicate": {"type": "boolean"}},
-            ["name"])),
     ("update_record", "Edit a record", WRITE, tool_update,
      "Change fields on a company or contact the rep owns (admins: any record). Only the fields given change. "
      "Records from Wingmate: the stage can't change here (it follows Wingmate's pipeline). "
@@ -1294,16 +1279,6 @@ TOOLS = [
     ("set_high_priority", "Flag high priority", WRITE_SAME, tool_priority,
      "Flag (or unflag) a contact as high priority. Anyone can.",
      schema({"id": ID, "high_priority": {"type": "boolean", "default": True}}, ["id"])),
-    ("bulk_add_contacts", "Add many contacts", WRITE, tool_bulk,
-     "Add up to 500 contacts at once (from a pasted list, spreadsheet, CSV or business cards). Companies are "
-     "matched by name or added. Duplicates already in PSS Connect are skipped. ALWAYS call with confirm=false "
-     "first, show the rep the preview, and only call again with the same rows and confirm=true once they agree.",
-     schema({"rows": {"type": "array", "maxItems": BULK_MAX, "items": schema({
-         "name": S, "company": S, **CONTACT_FIELDS,
-         "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for the contact's company, from pss_overview's company_tags."},
-         "high_priority": {"type": "boolean"}, "owner": OWNER}, ["name"])},
-             "confirm": {"type": "boolean", "description": "false = preview only (nothing saved); true = save."}},
-            ["rows", "confirm"])),
     ("search_wingmate", "Search Wingmate", WINGMATE, tool_wm_search,
      "Search leads in the team's connected Wingmate pipeline, live (read-only): status, address, owners, "
      "contacts, last activity, and the matching PSS Connect record id if synced.",
