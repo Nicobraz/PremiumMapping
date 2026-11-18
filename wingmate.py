@@ -644,6 +644,10 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
     # Companies an earlier sync made from contact leads ("Mint-Walter Varela"): never a match.
     made_from_contacts = {by_wm[f"lead:{lid}"]["id"] for lid in person_leads
                           if by_wm.get(f"lead:{lid}", {}).get("type") == "company"}
+    headcount = {}  # people at each company here
+    for n in nodes:
+        if n["type"] == "person" and n["company_id"]:
+            headcount[n["company_id"]] = headcount.get(n["company_id"], 0) + 1
     # Which company each company email domain belongs to here (by the people already at it).
     domain_votes = {}
     for n in nodes:
@@ -668,14 +672,13 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 if best is not None and best["type"] == "company":
                     return best
         if company_name:
+            # Named like the lead ("Mint" -> Mint, Mint Construction…): the one with the most
+            # people here, so an empty look-alike never wins over the real company.
             key = norm_name(company_name, True)
-            exact = companies_by_name.get(key)
-            if exact is not None and exact["id"] not in made_from_contacts:
-                return exact
-            starts = [n for n in by_id.values() if n["type"] == "company" and n["id"] not in made_from_contacts
-                      and norm_name(n["name"], True).startswith(key + " ")]
-            if len(starts) == 1:
-                return starts[0]
+            found = [n for n in by_id.values() if n["type"] == "company" and n["id"] not in made_from_contacts
+                     and (norm_name(n["name"], True) == key or norm_name(n["name"], True).startswith(key + " "))]
+            if found:
+                return max(found, key=lambda n: (headcount.get(n["id"], 0), norm_name(n["name"], True) == key))
         return None
 
     def person_lead_company(lead_id, wm_id, company_name, location, owner, held, company_lead=None, emails=()):
@@ -683,6 +686,13 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         name when there's none, with the lead recorded as one of its leads. A company an
         earlier sync made from the lead is folded into it. None when there's no company."""
         target = company_for(company_lead, company_name, emails)
+        # A look-alike company an earlier sync made for this lead (e.g. an empty "Mint" next to
+        # Mint Construction) is folded into the one it should have been.
+        before = by_id.get(aliases.get(wm_id, (None,))[0])
+        if (target is not None and before is not None and before is not target and before["type"] == "company"
+                and not before.get("wingmate_id") and norm_name(before["name"], True) == norm_name(company_name, True)):
+            fold_company(before, target)
+            companies_by_name.pop(norm_name(company_name, True), None)
         made = by_wm.get(wm_id)
         if target is None and not company_name:
             if made is not None and made["type"] == "company":
@@ -870,6 +880,11 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         elif node is None:
             node = people_by_email.get(email) if email else None
             node = node or people_by_key.get((norm_name(name), company["id"]))
+            if node is None and not email and company["id"] and len(norm_name(name).split()) == 1:
+                # Just a first name ("Morgan"): the one person by that first name at the company.
+                same = [n for n in by_id.values() if n["type"] == "person" and n["company_id"] == company["id"]
+                        and norm_name(n["name"]).split()[:1] == norm_name(name).split()]
+                node = same[0] if len(same) == 1 else None
             if node is not None and not node.get("wingmate_id"):
                 counts["people_linked"] += 1
                 update(node, {"wingmate_id": wm_id})
