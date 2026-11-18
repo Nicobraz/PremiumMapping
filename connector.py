@@ -1178,6 +1178,8 @@ def tool_wm_lead(args):
     flag = wingmate.push_flag(lead)
     out["pss_connect_push"] = "yes" if flag else "no" if flag is False else "not set"
     out["pss_connect_card"] = wingmate.card_kind(lead) or "not set"
+    out["pss_connect_fields"] = wingmate.pss_fields(lead)
+    out["wingmate_fields"] = sorted(str(k) for k in lead.keys())  # what Wingmate sends, to check where a field lives
     info = {k: v for k, v in wingmate.custom_fields(lead) if wingmate.text(v)}
     if info:
         out["lead_info"] = info

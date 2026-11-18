@@ -145,10 +145,11 @@ def custom_fields(item):
     return pairs
 
 
-# "PSS Connect Push" is a lead info field in Wingmate: only leads set to Yes are brought
-# into PSS Connect (ones already here keep syncing). Wingmate's lead info can arrive in
-# several shapes, so the field is looked for anywhere in the lead.
-PUSH_FIELD = "PSS Connect Push"
+# Lead info fields in Wingmate whose names start with "PSS Connect" steer the sync. One set
+# to Yes (e.g. "PSS Connect" or "PSS Connect Push") brings the lead into PSS Connect (ones
+# already here keep syncing); one set to Company or Contact says what the lead is.
+# Wingmate's API squashes field names ("pssconnect"), and lead info can arrive in several
+# shapes, so fields are matched loosely and looked for anywhere in the lead.
 _LABEL_KEYS = ("name", "label", "key", "title", "field_name", "custom_field_name", "display_name")
 _VALUE_KEYS = ("value", "values", "selected", "selected_option", "selected_options", "answer", "text")
 
@@ -157,63 +158,15 @@ def _words(value):
     return " ".join("".join(ch if ch.isalnum() else " " for ch in str(value).lower()).split())
 
 
-def _is_push_label(value):
-    words = _words(value)
-    return "pss connect" in words and "push" in words
-
-
-def _says_yes(value):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value == 1
-    if isinstance(value, str):
-        return _words(value) in ("yes", "y", "true", "1", "checked", "on")
-    if isinstance(value, list):
-        return any(_says_yes(v) for v in value)
-    if isinstance(value, dict):
-        return any(_says_yes(value[k]) for k in _VALUE_KEYS + ("name", "label") if k in value)
-    return False
-
-
-_MISSING = object()
-
-
-def find_field(item, is_label, depth=0):
-    """The value of the lead info field whose label passes is_label, or _MISSING."""
-    if depth > 6:
-        return _MISSING
-    if isinstance(item, dict):
-        label = next((item[k] for k in _LABEL_KEYS if isinstance(item.get(k), str)), None)
-        nested = next((v for k, v in item.items() if k in ("custom_field", "field", "definition", "lead_info_field")
-                       and isinstance(v, dict)), None)
-        if nested is not None and label is None:
-            label = next((nested[k] for k in _LABEL_KEYS if isinstance(nested.get(k), str)), None)
-        if label is not None and is_label(label):
-            return [item[k] for k in _VALUE_KEYS if k in item]
-        for key, value in item.items():
-            if is_label(key):
-                return value
-        for value in item.values():
-            if isinstance(value, (dict, list)):
-                found = find_field(value, is_label, depth + 1)
-                if found is not _MISSING:
-                    return found
-    elif isinstance(item, list):
-        for value in item:
-            found = find_field(value, is_label, depth + 1)
-            if found is not _MISSING:
-                return found
-    return _MISSING
-
-
-def push_flag(item):
-    """True/False for the lead's "PSS Connect Push" field, or None when it doesn't have one."""
-    value = find_field(item, _is_push_label)
-    return None if value is _MISSING else _says_yes(value)
+def _is_pss_label(value):
+    return _words(value).replace(" ", "").startswith("pssconnect")
 
 
 def _texts(value):
+    if isinstance(value, bool):
+        return ["yes" if value else "no"]
+    if isinstance(value, (int, float)):
+        return [str(value)]
     if isinstance(value, str):
         return [value]
     if isinstance(value, list):
@@ -223,17 +176,62 @@ def _texts(value):
     return []
 
 
+def pss_fields(item, depth=0, out=None):
+    """The values of every lead info field named "PSS Connect…", as lists of words."""
+    out = [] if out is None else out
+    if depth > 6:
+        return out
+    if isinstance(item, dict):
+        label = next((item[k] for k in _LABEL_KEYS if isinstance(item.get(k), str)), None)
+        nested = next((v for k, v in item.items() if k in ("custom_field", "field", "definition", "lead_info_field")
+                       and isinstance(v, dict)), None)
+        if nested is not None and label is None:
+            label = next((nested[k] for k in _LABEL_KEYS if isinstance(nested.get(k), str)), None)
+        if label is not None and _is_pss_label(label):
+            out.append([_words(t) for k in _VALUE_KEYS if k in item for t in _texts(item[k])])
+            return out
+        for key, value in item.items():
+            if _is_pss_label(key):
+                out.append([_words(t) for t in _texts(value)])
+            elif isinstance(value, (dict, list)):
+                pss_fields(value, depth + 1, out)
+    elif isinstance(item, list):
+        for value in item:
+            pss_fields(value, depth + 1, out)
+    return out
+
+
+YES = {"yes", "y", "true", "1", "checked", "on"}
+NO = {"no", "n", "false", "0", "unchecked", "off", ""}
+
+
+def push_flag(item):
+    """True when a "PSS Connect…" field says Yes, False when one says No, None when none does."""
+    answers = [w for field in pss_fields(item) for w in (field or [""])]
+    if any(w in YES for w in answers):
+        return True
+    return False if any(w in NO for w in answers) else None
+
+
 def card_kind(item):
-    """The lead's "PSS Connect" field (Company or Contact): 'company', 'contact' or ''.
-    Company: the lead is a company card. Contact: its contact goes under the company
-    lead they're linked to."""
-    value = find_field(item, lambda label: "pss connect" in _words(label) and "push" not in _words(label))
-    words = " ".join(_words(t) for t in _texts(value)) if value is not _MISSING else ""
+    """'company' or 'contact' from a "PSS Connect…" field, else ''."""
+    words = " ".join(w for field in pss_fields(item) for w in field)
     if "contact" in words and "company" not in words:
         return "contact"
     if "company" in words and "contact" not in words:
         return "company"
     return ""
+
+
+# Free mail providers: a shared email domain only says two people work at the same
+# company when it's the company's own domain.
+FREE_MAIL = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "msn.com",
+             "live.com", "me.com", "comcast.net", "msn.com", "protonmail.com", "ymail.com", "mac.com"}
+
+
+def email_domain(email):
+    domain = email.rsplit("@", 1)[-1].strip().lower() if "@" in (email or "") else ""
+    return "" if not domain or domain in FREE_MAIL else domain
 
 
 def custom_value(item, *words):
@@ -426,12 +424,20 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
     for contact in contacts:
         contacts_by_lead.setdefault(first_id(contact.get("lead_id") or contact.get("lead")), []).append(contact)
 
+    def names_contact(lead_id, words):
+        """Whether `words` is one of the lead's contacts (their full name or first name)."""
+        wanted = norm_name(words)
+        return bool(wanted) and any(norm_name(text(c.get("name"))) == wanted
+                                    or norm_name(text(c.get("name"))).startswith(wanted + " ")
+                                    for c in contacts_by_lead.get(lead_id, []))
+
     def company_of_person_lead(lead_id, name):
-        for sep in (" - ", " \u2013 ", " \u2014 "):
-            if sep in name:
-                left, right = (part.strip() for part in name.rsplit(sep, 1))
-                if left and right and any(norm_name(text(c.get("name"))) == norm_name(right)
-                                          for c in contacts_by_lead.get(lead_id, [])):
+        """'Mint-Travis' / 'Jackson Leroy - Joshua Glauser' -> the company part, when the part
+        after the last dash is one of the lead's contacts."""
+        for i, ch in enumerate(name):
+            if ch in "-\u2013\u2014":
+                left, right = name[:i].strip(), name[i + 1:].strip()
+                if left and names_contact(lead_id, right):
                     return left
         return ""
 
@@ -451,7 +457,7 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                 listed_on.setdefault(("email", email), []).append(lead_id)
             listed_on.setdefault(("name", norm_name(text(contact.get("name")))), []).append(lead_id)
 
-    person_leads = {}  # contact lead id -> (its company lead id or None, company name or '')
+    person_leads = {}  # contact lead id -> (its company lead id or None, company name or '', its emails)
     own_lead = {}  # a contact (by email, or name at a company) -> their own contact lead
     for lead in leads:
         lead_id = str(lead.get("id"))
@@ -469,9 +475,14 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
                     break
         if not company_name:
             company_name = company_of_person_lead(lead_id, lead_names[lead_id])
-        if not company_name and kinds[lead_id] != "contact":
+        # A lead named just after its contact ("Dusten Jones") is about that person too.
+        about_person = kinds[lead_id] == "contact" or bool(company_name) \
+            or (norm_name(lead_names[lead_id]) and any(norm_name(text(c.get("name"))) == norm_name(lead_names[lead_id])
+                                                       for c in contacts_by_lead.get(lead_id, [])))
+        if not about_person:
             continue  # an ordinary lead: a company card
-        person_leads[lead_id] = (company_lead, company_name)
+        emails = [text(c.get("email")).lower() for c in contacts_by_lead.get(lead_id, []) if text(c.get("email"))]
+        person_leads[lead_id] = (company_lead, company_name, emails)
         for contact in contacts_by_lead.get(lead_id, []):
             email = text(contact.get("email")).lower()
             if email:
@@ -608,20 +619,55 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
             db.execute("UPDATE nodes SET tags = ? WHERE id = ?", (", ".join(merged), into["id"]))
         move_refs(old, into)
 
-    def person_lead_company(lead_id, wm_id, company_name, location, owner, held, company_lead=None):
-        """The company a contact lead belongs to: its company lead's card, else found by name
-        or created, with the lead recorded as one of its leads. A company an earlier sync
-        made from the lead is folded into it."""
-        target = None
+    # Companies an earlier sync made from contact leads ("Mint-Walter Varela"): never a match.
+    made_from_contacts = {by_wm[f"lead:{lid}"]["id"] for lid in person_leads
+                          if by_wm.get(f"lead:{lid}", {}).get("type") == "company"}
+    # Which company each company email domain belongs to here (by the people already at it).
+    domain_votes = {}
+    for n in nodes:
+        if n["type"] == "person" and n["company_id"] and n["company_id"] not in made_from_contacts:
+            domain = email_domain(n["email"])
+            if domain:
+                votes = domain_votes.setdefault(domain, {})
+                votes[n["company_id"]] = votes.get(n["company_id"], 0) + 1
+
+    def company_for(company_lead, company_name, emails):
+        """A contact lead's company card: its company lead's, else the company their email
+        domain belongs to, else one named like the lead ("Mint" -> Mint Construction)."""
         if company_lead:
             ref = f"lead:{company_lead}"
-            target = by_wm.get(ref)
-            if target is None and ref in aliases:
-                target = by_id.get(aliases[ref][0])
-            if target is not None and target["type"] != "company":
-                target = None
-        target = target or companies_by_name.get(norm_name(company_name, True))
+            target = by_wm.get(ref) or (by_id.get(aliases[ref][0]) if ref in aliases else None)
+            if target is not None and target["type"] == "company" and target["id"] not in made_from_contacts:
+                return target
+        for email in emails:
+            votes = domain_votes.get(email_domain(email))
+            if votes:
+                best = by_id.get(max(votes, key=votes.get))
+                if best is not None and best["type"] == "company":
+                    return best
+        if company_name:
+            key = norm_name(company_name, True)
+            exact = companies_by_name.get(key)
+            if exact is not None and exact["id"] not in made_from_contacts:
+                return exact
+            starts = [n for n in by_id.values() if n["type"] == "company" and n["id"] not in made_from_contacts
+                      and norm_name(n["name"], True).startswith(key + " ")]
+            if len(starts) == 1:
+                return starts[0]
+        return None
+
+    def person_lead_company(lead_id, wm_id, company_name, location, owner, held, company_lead=None, emails=()):
+        """The company a contact lead belongs to (see company_for), created from the lead's
+        name when there's none, with the lead recorded as one of its leads. A company an
+        earlier sync made from the lead is folded into it. None when there's no company."""
+        target = company_for(company_lead, company_name, emails)
         made = by_wm.get(wm_id)
+        if target is None and not company_name:
+            if made is not None and made["type"] == "company":
+                by_wm.pop(wm_id, None)  # keep the card, but it no longer stands for the lead
+                counts["companies_updated"] += 1
+                update(made, {"wingmate_id": ""})
+            return None
         if made is not None and made["type"] == "company" and made is not target:
             by_wm.pop(wm_id, None)
             if target is None:  # nothing to fold into: it becomes the company itself
@@ -674,20 +720,18 @@ def run_sync(db, client, tools, dry_run=False, map_from_stage="", pipeline_name=
         held = lead_id in held_back
         fresh = False
         node = by_wm.get(wm_id)
-        if lead_id in person_leads and not person_leads[lead_id][1]:
-            # A Contact lead with no company: its contact comes in on its own.
-            made = by_wm.pop(wm_id, None)
-            if made is not None and made["type"] == "company":  # an earlier sync made it a company
-                counts["companies_updated"] += 1
-                update(made, {"wingmate_id": ""})
+        if lead_id in person_leads:
+            company_lead, company_name, emails = person_leads[lead_id]
+            node = person_lead_company(lead_id, wm_id, company_name, location, owner, held, company_lead, emails)
+        if lead_id in person_leads and node is None:
+            # A contact lead with no company found: its contact comes in on its own.
             lead_nodes[lead_id] = no_company
             last_seen = aliases.get(wm_id, (None, ""))[1]
             if not seen or seen != last_seen:
                 comment_queue.append((lead_id, no_company, seen, False))
             continue
         if lead_id in person_leads:
-            company_lead, company_name = person_leads[lead_id]
-            node = person_lead_company(lead_id, wm_id, company_name, location, owner, held, company_lead)
+            pass  # placed above
         elif node is None and wm_id in aliases and aliases[wm_id][0] in by_id:
             node = by_id[aliases[wm_id][0]]
         elif node is None:
