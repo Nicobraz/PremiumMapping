@@ -11,11 +11,15 @@ const REL = {
   knows:      { label: 'Knows',      color: '#64748b', directed: false, verb: 'knows' },
   reports_to: { label: 'Reports to', color: '#2563eb', directed: true,  verb: 'reports to', back: 'manages' },
   referred:   { label: 'Referred',   color: '#16a34a', directed: true,  verb: 'referred', back: 'was referred by' },
-  partner:    { label: 'Partner',    color: '#9333ea', directed: false, verb: 'partners with' },
-  vendor:     { label: 'Vendor to',  color: '#d97706', directed: true,  verb: 'is a vendor to', back: 'buys from' },
-  competitor: { label: 'Competitor', color: '#dc2626', directed: false, verb: 'competes with' },
-  other:      { label: 'Other',      color: '#94a3b8', directed: false, verb: 'is connected to' },
+  // Custom: named when it's added (e.g. Partner, Supplier, Competitor).
+  custom:     { label: 'Custom',     color: '#9333ea', directed: false, verb: 'is connected to' },
 };
+// Types since folded into Custom, in case an old record still has one.
+const OLD_REL_LABELS = { partner: 'Partner', vendor: 'Vendor to', competitor: 'Competitor', other: 'Connected' };
+const relOf = (e) => REL[e.rel_type] || REL.custom;
+// A connection's name: its type, or a Custom one's own label.
+const relName = (e) => (REL[e.rel_type] && e.rel_type !== 'custom' ? REL[e.rel_type].label
+  : e.label || OLD_REL_LABELS[e.rel_type] || 'Custom');
 const WORKS_AT = 'works_at';
 const STRENGTH = { 1: 'Weak', 2: 'Medium', 3: 'Strong' };
 const PALETTE = ['#0f766e', '#2563eb', '#c2410c', '#7c3aed', '#be123c', '#15803d', '#a16207', '#0369a1', '#9d174d', '#4d7c0f', '#6d28d9', '#b45309'];
@@ -338,7 +342,6 @@ function graphStyle() {
     { selector: `edge[rel="${WORKS_AT}"]`, style: {
       'line-style': 'dashed', 'line-dash-pattern': [4, 4], 'line-color': cssVar('--cy-works-at'), 'opacity': 1,
     } },
-    { selector: 'edge[rel="competitor"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [7, 4] } },
     // A connection that would run through someone else's dot bends around it.
     { selector: 'edge.detour', style: {
       'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(bend)', 'control-point-weights': 0.5,
@@ -407,12 +410,12 @@ function nodeElement(n) {
 }
 
 function edgeElement(e) {
-  const rel = REL[e.rel_type] || REL.other;
+  const rel = relOf(e);
   return {
     group: 'edges',
     data: {
       id: `e${e.id}`, eid: e.id, source: `n${e.source_id}`, target: `n${e.target_id}`,
-      rel: e.rel_type, label: rel.label, color: rel.color,
+      rel: REL[e.rel_type] ? e.rel_type : 'custom', label: relName(e), color: rel.color,
       width: 1 + e.strength * 1.5, arrow: rel.directed ? 'triangle' : 'none',
     },
   };
@@ -933,7 +936,7 @@ function buildLegend() {
   // The phone layout shows the same chips inside the Filter menu.
   $('#legend').innerHTML = $('#legend-mobile').innerHTML = rels.map(([key, r]) => `
     <button class="chip ${state.hiddenRels.has(key) ? 'off' : ''}" data-rel="${key}" title="Show or hide ${esc(r.label)}">
-      <span class="swatch ${key === WORKS_AT || key === 'competitor' ? 'dashed' : ''}" style="background:${r.color};color:${r.color}"></span>${esc(r.label)}
+      <span class="swatch ${key === WORKS_AT ? 'dashed' : ''}" style="background:${r.color};color:${r.color}"></span>${esc(r.label)}
     </button>`).join('');
 }
 
@@ -1603,8 +1606,8 @@ function connectionRows(nodeId) {
     const outgoing = e.source_id === nodeId;
     const other = state.nodes.get(outgoing ? e.target_id : e.source_id);
     if (!other) continue;
-    const rel = REL[e.rel_type] || REL.other;
-    const phrase = rel.directed && !outgoing ? rel.back : rel.verb;
+    const rel = relOf(e);
+    const phrase = rel === REL.custom ? relName(e) : rel.directed && !outgoing ? rel.back : rel.verb;
     rows.push({ other, phrase, strength: e.strength, edgeId: e.id, color: rel.color });
   }
   return rows.sort((a, b) => b.strength - a.strength || byName(a.other, b.other));
@@ -1773,6 +1776,7 @@ function pickerHtml(n) {
       `<option value="${o.id}" ${o.id === p.otherId ? 'selected' : ''}>${optionLabel(o)}</option>`).join('')}</optgroup>`).join('');
   return `<form class="picker" data-form="quick-edge">
     <div class="picker-line"><b>${esc(n.name)}</b><select name="rel_type" aria-label="Relationship">${relOptions('knows')}</select></div>
+    <input name="label" class="rel-label" maxlength="60" placeholder="Name it (e.g. Partner, Supplier)" aria-label="Custom relationship" hidden>
     <select name="target_id" aria-label="Connect to"><option value="">Choose who…</option>${options}</select>
     <div class="seg" role="radiogroup" aria-label="Strength">${strengthSeg(2)}</div>
     <input name="notes" maxlength="5000" placeholder="How do they know each other? (optional)">
@@ -1937,7 +1941,7 @@ function companyCardHtml(n) {
       <div class="section">
         <h3>Company connections <span>${direct.length}</span></h3>
         ${pickerHtml(n)}
-        ${connListHtml(direct, 'Partners, vendors or competitors of this company.')}
+        ${connListHtml(direct, 'Other companies connected to this one.')}
       </div>`
     + notesSectionHtml(n)
     + metaLine(n);
@@ -2227,7 +2231,8 @@ function openNewNodePanel(type, companyId) {
 
 function edgeFormHtml(e, isNew) {
   return `<form class="form" data-form="edge">
-    <label>Relationship<select name="rel_type">${relOptions(e.rel_type)}</select></label>
+    <label>Relationship<select name="rel_type">${relOptions(REL[e.rel_type] ? e.rel_type : 'custom')}</select></label>
+    <label class="rel-label" ${relOf(e) === REL.custom ? '' : 'hidden'}>Name<input name="label" maxlength="60" value="${esc(relName(e) === 'Custom' ? '' : relName(e))}" placeholder="e.g. Partner, Supplier, Competitor"></label>
     <div class="field"><span>Strength</span><div class="seg" role="radiogroup">${strengthSeg(e.strength)}</div></div>
     <label>Notes<textarea name="notes" rows="4" maxlength="5000" placeholder="How do they know each other? Any context for the team?">${esc(e.notes)}</textarea></label>
     <div class="form-actions">
@@ -2240,7 +2245,7 @@ function edgeFormHtml(e, isNew) {
 function edgeEndsHtml(sourceId, targetId, relType, canSwap) {
   const a = state.nodes.get(sourceId);
   const b = state.nodes.get(targetId);
-  const directed = (REL[relType] || REL.other).directed;
+  const directed = (REL[relType] || REL.custom).directed;
   return `<div class="edge-ends">
     <button type="button" data-goto="${a.id}">${esc(a.name)}</button>
     <span class="arrow">${directed ? '→' : '—'}</span>
@@ -2250,7 +2255,7 @@ function edgeEndsHtml(sourceId, targetId, relType, canSwap) {
 }
 
 function edgeReadOnlyHtml(e) {
-  const facts = [['Relationship', (REL[e.rel_type] || REL.other).label], ['Strength', STRENGTH[e.strength]],
+  const facts = [['Relationship', relName(e)], ['Strength', STRENGTH[e.strength]],
     ['Added by', e.created_by || 'Unknown']];
   return `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
     ${e.notes ? `<div class="section"><h3>Notes</h3><p class="about">${esc(e.notes)}</p></div>` : ''}
@@ -2263,12 +2268,12 @@ function openEdgePanel(id) {
   cy.elements().unselect();
   cy.getElementById(`e${id}`).select();
   if (!canEditEdge(e)) {
-    showPanel({ kind: 'edge', id }, panelHead('Connection', '', (REL[e.rel_type] || REL.other).label)
+    showPanel({ kind: 'edge', id }, panelHead('Connection', '', relName(e))
       + edgeEndsHtml(e.source_id, e.target_id, e.rel_type, false) + edgeReadOnlyHtml(e) + metaLine(e));
     return;
   }
   showPanel({ kind: 'edge', id },
-    panelHead('Connection', '', (REL[e.rel_type] || REL.other).label)
+    panelHead('Connection', '', relName(e))
     + edgeEndsHtml(e.source_id, e.target_id, e.rel_type, true)
     + edgeFormHtml(e, false) + metaLine(e));
 }
@@ -2603,7 +2608,15 @@ panel.addEventListener('change', (evt) => {
   if (evt.target.name === 'company_id') updateDupHint(evt.target.form);
   if (evt.target.name !== 'rel_type') return;
   const arrow = panel.querySelector('.edge-ends .arrow');
-  if (arrow) arrow.textContent = (REL[evt.target.value] || REL.other).directed ? '→' : '—';
+  if (arrow) arrow.textContent = (REL[evt.target.value] || REL.custom).directed ? '→' : '—';
+  // Custom asks for a name.
+  const label = evt.target.form?.querySelector('.rel-label');
+  if (label) {
+    label.hidden = evt.target.value !== 'custom';
+    const input = label.matches('input') ? label : label.querySelector('input');
+    input.required = evt.target.value === 'custom';
+    if (!label.hidden) input.focus();
+  }
 });
 
 // Cmd/Ctrl+Enter saves a note.
@@ -2916,7 +2929,7 @@ panel.addEventListener('submit', async (evt) => {
     } else if (form.dataset.form === 'quick-edge') {
       if (!data.target_id) { toast('Choose who to connect to'); return; }
       await api('POST', '/api/edges', {
-        source_id: p.id, target_id: Number(data.target_id), rel_type: data.rel_type,
+        source_id: p.id, target_id: Number(data.target_id), rel_type: data.rel_type, label: data.label || '',
         strength: Number(data.strength || 2), notes: data.notes,
       });
       state.picker = null;

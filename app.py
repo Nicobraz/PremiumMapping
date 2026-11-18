@@ -43,11 +43,13 @@ TEMPORARY_STORAGE = bool(os.environ.get("RENDER")) and not USE_POSTGRES
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 NODE_TYPES = ("company", "person")
-REL_TYPES = ("knows", "reports_to", "referred", "partner", "vendor", "competitor", "other")
+REL_TYPES = ("knows", "reports_to", "referred", "custom")
+# Types since replaced by Custom with its own label (old backups and imports still use them).
+OLD_REL_LABELS = {"partner": "Partner", "vendor": "Vendor to", "competitor": "Competitor", "other": "Connected"}
 NODE_TEXT_FIELDS = ("name", "title", "email", "phone", "location", "tags", "owner_rep", "notes", "stage")
 NODE_COLUMNS = ("id", "type", "company_id", "x", "y", "created_at", "updated_at", "updated_by",
                 "wingmate_id", "wingmate_seen", "wingmate_sync", "color", "priority", "off_map") + NODE_TEXT_FIELDS
-EDGE_COLUMNS = ("id", "source_id", "target_id", "rel_type", "strength", "notes",
+EDGE_COLUMNS = ("id", "source_id", "target_id", "rel_type", "label", "strength", "notes",
                 "created_at", "updated_at", "updated_by")
 
 SCHEMA = """
@@ -312,6 +314,11 @@ MIGRATIONS = [  # (table, column, definition, backfill SQL run once when the col
     ("reps", "is_admin", "INTEGER NOT NULL DEFAULT 0", None),
     ("reps", "password_hash", "TEXT NOT NULL DEFAULT ''", None),
     ("edges", "created_by", "TEXT NOT NULL DEFAULT ''", "UPDATE edges SET created_by = updated_by"),
+    # A Custom connection's own name (Partner, Vendor to, Competitor and Other became Custom).
+    ("edges", "label", "TEXT NOT NULL DEFAULT ''",
+     "UPDATE edges SET label = CASE rel_type WHEN 'partner' THEN 'Partner' WHEN 'vendor' THEN 'Vendor to' "
+     "WHEN 'competitor' THEN 'Competitor' ELSE 'Connected' END, rel_type = 'custom' "
+     "WHERE rel_type IN ('partner', 'vendor', 'competitor', 'other')"),
     # Links to Wingmate records ("lead:123" / "contact:456") and the last lead activity seen.
     ("nodes", "wingmate_id", "TEXT NOT NULL DEFAULT ''", None),
     ("nodes", "wingmate_seen", "TEXT NOT NULL DEFAULT ''", None),
@@ -714,9 +721,19 @@ def clean_node_fields(db, data, node_type):
 def clean_edge_fields(data):
     out = {}
     if "rel_type" in data:
-        if data["rel_type"] not in REL_TYPES:
+        rel = data["rel_type"]
+        if rel in OLD_REL_LABELS:
+            out["label"] = OLD_REL_LABELS[rel]
+            rel = "custom"
+        if rel not in REL_TYPES:
             return None, "Unknown relationship type"
-        out["rel_type"] = data["rel_type"]
+        out["rel_type"] = rel
+    if "label" in data and str(data["label"] or "").strip():
+        out["label"] = str(data["label"]).strip()[:60]
+    if out.get("rel_type") == "custom" and not out.get("label"):
+        return None, "Name the custom relationship (e.g. Partner, Supplier)"
+    if out.get("rel_type") in REL_TYPES[:-1]:
+        out["label"] = ""
     if "strength" in data:
         strength = to_int(data["strength"])
         if strength is None:

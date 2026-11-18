@@ -696,7 +696,7 @@ def tool_get_record(args):
         other = nodes.get(e["target_id"] if e["source_id"] == n["id"] else e["source_id"])
         if not other:
             continue
-        rel = e["rel_type"].replace("_", " ")
+        rel = (e["label"] or "custom") if e["rel_type"] == "custom" else e["rel_type"].replace("_", " ")
         if e["rel_type"] in ("reports_to", "referred"):
             rel = f"{rel} →" if e["source_id"] == n["id"] else f"← {rel}"
         item = {"connection_id": e["id"], "relationship": rel, "strength": e["strength"],
@@ -726,8 +726,8 @@ def tool_path(args):
     def link(a, b, label):
         links.setdefault(a, []).append((b, label))
         links.setdefault(b, []).append((a, label))
-    for e in db.execute("SELECT source_id, target_id, rel_type FROM edges"):
-        link(e["source_id"], e["target_id"], e["rel_type"].replace("_", " "))
+    for e in db.execute("SELECT source_id, target_id, rel_type, label FROM edges"):
+        link(e["source_id"], e["target_id"], e["label"] if e["rel_type"] == "custom" and e["label"] else e["rel_type"].replace("_", " "))
     for n in nodes.values():
         if n["type"] == "person" and n["company_id"] in nodes:
             link(n["id"], n["company_id"], "works at")
@@ -900,17 +900,23 @@ def tool_connect(args):
     db = core.get_db()
     source, target = core.to_int(args.get("from_id")), core.to_int(args.get("to_id"))
     rel = str(args.get("relationship") or "knows").strip().lower().replace(" ", "_")
+    label = str(args.get("label") or "").strip()
+    if rel not in REL_TYPES:  # e.g. "partner": a custom relationship with that name
+        label, rel = label or rel.replace("_", " ").capitalize(), "custom"
+    if rel == "custom" and not label:
+        raise ToolError("Name the custom relationship with label (e.g. Partner, Supplier).")
     for e in edges_of(db, source or 0):
-        if {e["source_id"], e["target_id"]} == {source, target} and e["rel_type"] == rel:
+        if {e["source_id"], e["target_id"]} == {source, target} and e["rel_type"] == rel \
+                and (rel != "custom" or e["label"].lower() == label.lower()):
             return {"ok": True, "already_connected": True, "connection_id": e["id"]}
-    body = {"source_id": source, "target_id": target, "rel_type": rel}
+    body = {"source_id": source, "target_id": target, "rel_type": rel, **({"label": label} if rel == "custom" else {})}
     if args.get("strength") is not None:
         body["strength"] = args["strength"]
     if args.get("notes"):
         body["notes"] = args["notes"]
     edge = api_ok("POST", "/api/edges", body)
     return {"ok": True, "connection_id": edge["id"],
-            "connected": f"{core.node_name(db, source)} → {core.node_name(db, target)} ({rel.replace('_', ' ')})"}
+            "connected": f"{core.node_name(db, source)} → {core.node_name(db, target)} ({label or rel.replace('_', ' ')})"}
 
 
 def tool_priority(args):
@@ -1217,7 +1223,7 @@ READ = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, 
 WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
 WRITE_SAME = {**WRITE, "idempotentHint": True}
 WINGMATE = {**READ, "openWorldHint": True}
-REL_TYPES = ("knows", "reports_to", "referred", "partner", "vendor", "competitor", "other")  # as in app.py
+REL_TYPES = ("knows", "reports_to", "referred", "custom")  # as in app.py
 
 TOOLS = [
     ("pss_overview", "Overview", READ, tool_overview,
@@ -1277,8 +1283,10 @@ TOOLS = [
      schema({"id": ID, "add": TAGS, "remove": TAGS}, ["id"])),
     ("connect_records", "Connect two records", WRITE, tool_connect,
      "Record a relationship between two records (any rep can connect anyone's records). "
-     "reports_to and referred are directional: from_id reports to / referred to_id.",
+     "reports_to and referred are directional: from_id reports to / referred to_id. Anything else "
+     "(partner, supplier, competitor…) is custom, named with label.",
      schema({"from_id": ID, "to_id": ID, "relationship": {"type": "string", "enum": list(REL_TYPES)},
+             "label": {"type": "string", "description": "The name of a custom relationship, e.g. Partner or Supplier."},
              "strength": {"type": "integer", "minimum": 1, "maximum": 3, "description": "1 weak, 2 normal, 3 strong"},
              "notes": S}, ["from_id", "to_id"])),
     ("set_high_priority", "Flag high priority", WRITE_SAME, tool_priority,
