@@ -161,8 +161,8 @@ async function loadMe() {
     setTimeout(loadMe, POLL_MS);
     return;
   }
-  // Reps always see their own map. Admins keep whichever rep's view they used last.
-  if (me.rep && !me.rep.is_admin && state.viewDefaultedFor !== me.rep.id) state.view = 'mine';
+  // Everyone opens in their own view; Team view is in the view menu.
+  if (me.rep && state.viewDefaultedFor !== me.rep.id) state.view = 'mine';  // everyone opens in their own view
   if (me.rep) state.viewDefaultedFor = me.rep.id;
   state.me = me.rep;
   state.adminConfigured = me.admin_configured;
@@ -518,8 +518,17 @@ function positionTagPills() {
   tagFrame = 0;
   const zoom = cy.zoom();
   const pan = cy.pan();
-  tagLayer.hidden = zoom < 0.45;  // too small to read when zoomed far out
-  if (tagLayer.hidden) return;
+  (state.teamHeaders || []).forEach((h, i) => {
+    const el = repHeaderEls[i];
+    if (!el) return;
+    el.style.left = `${h.x * zoom + pan.x}px`;
+    el.style.top = `${h.y * zoom + pan.y}px`;
+    el.style.transform = `scale(${Math.min(Math.max(zoom, 0.6), 1.4)})`;  // stays readable zoomed out
+  });
+  tagLayer.hidden = false;
+  const small = zoom < 0.45;  // tags are too small to read when zoomed far out
+  for (const el of tagPills.values()) el.style.visibility = small ? 'hidden' : '';
+  if (small) return;
   for (const [id, el] of tagPills) {
     const node = cy.getElementById(`n${id}`);
     if (node.empty() || node.hasClass('view-hidden')) { el.hidden = true; continue; }
@@ -530,6 +539,24 @@ function positionTagPills() {
     el.style.transform = `translateX(-50%) scale(${zoom})`;
     el.style.opacity = node.hasClass('dim') || node.hasClass('faded') ? '0.15' : '1';
   }
+}
+
+// Rep name headings over Team view's groups.
+const repHeaderEls = [];
+function renderRepHeaders() {
+  const headers = state.teamHeaders || [];
+  while (repHeaderEls.length > headers.length) repHeaderEls.pop().remove();
+  headers.forEach((h, i) => {
+    if (!repHeaderEls[i]) {
+      const el = document.createElement('div');
+      el.className = 'rep-header';
+      tagLayer.appendChild(el);
+      repHeaderEls.push(el);
+    }
+    const html = `${esc(h.name)}<small>${plural(h.companies, 'company', 'companies')}</small>`;
+    if (repHeaderEls[i].innerHTML !== html) repHeaderEls[i].innerHTML = html;
+  });
+  scheduleTagPositions();
 }
 
 function scheduleTagPositions() {
@@ -771,7 +798,7 @@ function viewChartPositions() {
 // Arranges the shared positions on the records themselves (used before any rep exists,
 // and for records that have none yet). Reps' views use the live grid instead.
 function runLayout(randomize) {
-  if (viewRep()) { layoutView(); fitView(); return; }
+  if (viewRep() || usesGrid()) { layoutView(); fitView(); return; }
   const eles = cy.nodes();
   if (!eles.length) return;
   const target = orgChartPositions();
@@ -820,6 +847,7 @@ cy.on('render', scheduleTagPositions);
 cy.on('dragfree', 'node', (evt) => {
   const el = evt.target;
   const p = el.position();
+  if (!viewRep()) { state.gridPos?.set(el.data('nid'), { x: p.x, y: p.y }); return; }  // Team view isn't saved
   state.unsaved.set(el.data('nid'), { x: Math.round(p.x), y: Math.round(p.y) });
   renderLayoutBar();
 });
@@ -1050,13 +1078,52 @@ function applyView() {
 // as leads come and go. Once a rep saves their own layout, that's used instead (new
 // records go beside it); ✣ removes it and goes back to the live grid.
 function usesGrid() {
-  return !!viewRep() && !state.viewPos?.size;
+  return !viewRep() || !state.viewPos?.size;  // Team view is always the live grid
+}
+
+// Team view: everyone's companies grouped by rep. Each rep's companies are in the standard
+// grid under their name, one rep under another (yours first, unassigned last).
+function teamChartPositions() {
+  const plan = orgChartPlan();
+  const ownerOf = (n) => (n.owner_rep || '').trim() || 'Unassigned';
+  const groups = new Map();
+  const group = (name) => {
+    if (!groups.has(name)) groups.set(name, { columns: [], loose: [] });
+    return groups.get(name);
+  };
+  for (const c of plan.columns) group(ownerOf(c.company)).columns.push(c);
+  for (const p of plan.loose) group(ownerOf(p)).loose.push(p);
+  const me = myName();
+  const order = [...groups.keys()].sort((a, b) => ((b === me) - (a === me))
+    || ((a === 'Unassigned') - (b === 'Unassigned')) || a.localeCompare(b));
+  const width = Math.max(ORG.colWidth, plan.columns.length ? bestOrgChart(plan).width : ORG.colWidth);
+  const pos = {};
+  const headers = [];
+  let y = 0;
+  for (const name of order) {
+    const g = groups.get(name);
+    const layout = orgChartFor(g, width);
+    headers.push({ name, x: 0, y: y - 80, companies: g.columns.length });
+    for (const [id, p] of Object.entries(layout.pos)) pos[id] = { x: p.x, y: p.y + y };
+    y += layout.height + 260;
+  }
+  return { pos, headers };
 }
 
 function layoutView() {
   const hadGrid = !!state.gridPos;
   state.gridPos = null;
-  if (state.viewSets && usesGrid()) state.gridPos = new Map(Object.entries(viewChartPositions()).map(([id, p]) => [Number(id), p]));
+  state.teamHeaders = [];
+  if (usesGrid()) {
+    if (viewRep()) {
+      state.gridPos = new Map(Object.entries(viewChartPositions()).map(([id, p]) => [Number(id), p]));
+    } else {
+      const team = teamChartPositions();
+      state.gridPos = new Map(Object.entries(team.pos).map(([id, p]) => [Number(id), p]));
+      state.teamHeaders = team.headers;
+    }
+  }
+  renderRepHeaders();
   if (!state.gridPos && !hadGrid) return;
   cy.batch(() => cy.nodes().forEach((el) => {
     const n = state.nodes.get(el.data('nid'));
@@ -1147,15 +1214,15 @@ function placeViewMissing() {
 function refreshViewOptions() {
   const select = $('#view-select');
   const me = myName();
-  // There's no Team view: every map is one rep's. Reps see their own; admins pick any rep.
+  // Your own view is the default; Team view shows everyone's, grouped by rep. Admins can
+  // also open any rep's view.
   const others = state.isAdmin ? activeReps().map((r) => r.name).filter((name) => name !== me) : [];
-  if (!state.isAdmin && me) state.view = 'mine';
-  else if (state.view === 'mine' && !me) state.view = others[0] || 'team';
-  else if (state.view !== 'mine' && !others.includes(state.view)) state.view = me ? 'mine' : others[0] || 'team';
-  select.disabled = !state.isAdmin && !!me;
+  if (state.view === 'mine' && !me) state.view = 'team';
+  else if (state.view !== 'mine' && state.view !== 'team' && !others.includes(state.view)) state.view = me ? 'mine' : 'team';
+  select.disabled = false;
   select.innerHTML = (me ? `<option value="mine">${state.isAdmin ? `My view (${esc(me)})` : 'My clients'}</option>` : '')
-    + (others.length ? `<optgroup label="A rep's view">${others.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</optgroup>` : '')
-    + (state.view === 'team' ? '<option value="team">Everyone (no reps yet)</option>' : '');
+    + '<option value="team">Team view (by rep)</option>'
+    + (others.length ? `<optgroup label="A rep's view">${others.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</optgroup>` : '');
   select.value = state.view;
 }
 

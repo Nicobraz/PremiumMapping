@@ -551,6 +551,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ---------- company tags on the map ---------- */
 .tag-layer { position: absolute; inset: 0; z-index: 2; overflow: hidden; pointer-events: none; }
+.rep-header {
+  position: absolute; transform-origin: 0 0; white-space: nowrap; pointer-events: none;
+  font-size: 22px; font-weight: 750; color: var(--text); letter-spacing: -.01em;
+}
+.rep-header small { margin-left: 10px; font-size: 13px; font-weight: 500; color: var(--muted); }
 .map-tags {
   position: absolute; display: flex; flex-wrap: wrap; justify-content: center; gap: 3px;
   width: max-content; max-width: 170px; transform-origin: top center;
